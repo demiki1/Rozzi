@@ -1,0 +1,25 @@
+name: ROZZI batch 3 hardening
+
+on:
+  push:
+    branches: [codex/rozzifix-batch1]
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Validate current branch
+        run: |
+          cd backend
+          npm ci --no-audit --no-fund
+          npx prisma generate
+          npm run build
+          npm test -- --runInBand
