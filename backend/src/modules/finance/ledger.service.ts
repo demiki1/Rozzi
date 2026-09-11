@@ -221,6 +221,10 @@ export class LedgerService {
 
     if (vendorReversal > 0) await this.record({ type: LedgerEntryType.VENDOR_EARNING, accountType: LedgerAccountType.VENDOR, accountId: order.vendorId, orderId: order.id, amount: -vendorReversal, description: `Vendor earning reversal for refund ${payload.refundId}`, idempotencyKey: `refund:${payload.refundId}:vendor` });
     if (commissionReversal > 0) await this.record({ type: LedgerEntryType.PLATFORM_COMMISSION, accountType: LedgerAccountType.PLATFORM, orderId: order.id, amount: -commissionReversal, description: `Platform revenue reversal for refund ${payload.refundId}`, idempotencyKey: `refund:${payload.refundId}:platform-revenue` });
+    if (promotionDiscount > 0 && !vendorFundedPromotion) {
+      const promotionReversal = Math.min(promotionDiscount, Math.max(0, Math.round(refundAmount * promotionDiscount / Math.max(1, order.totalAmount))));
+      if (promotionReversal > 0) await this.record({ type: LedgerEntryType.PROMOTION, accountType: LedgerAccountType.PLATFORM, orderId: order.id, amount: promotionReversal, description: `ROZZI promotion expense reversal for refund ${payload.refundId}`, idempotencyKey: `refund:${payload.refundId}:promotion` });
+    }
     if (riderReversal > 0 && order.delivery?.riderId) await this.record({ type: LedgerEntryType.RIDER_EARNING, accountType: LedgerAccountType.RIDER, accountId: order.delivery.riderId, orderId: order.id, amount: -riderReversal, description: `Rider earning reversal for refund ${payload.refundId}`, idempotencyKey: `refund:${payload.refundId}:rider` });
   }
 

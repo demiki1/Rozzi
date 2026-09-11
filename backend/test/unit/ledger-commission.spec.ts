@@ -182,4 +182,11 @@ describe('LedgerService — order-delivered booking (§21)', () => {
     expect(created.find(e=>e.type===LedgerEntryType.VENDOR_EARNING).amount).toBe(900000);
   });
 
+  it('reverses ROZZI-funded promotion expense on refund', async () => {
+    const order = { id:'order-refund-promo', orderNumber:'RZW-REFUND-PROMO', vendorId:'vendor-1', subtotalAmount:900000, discountAmount:100000, totalAmount:915000, deliveryFeeAmount:0, serviceFeeAmount:15000, riderPayoutRateSnapshot:92, promotionId:'promo-3', promotion:{vendorId:null}, items:[{subtotalAmount:1000000,commissionRateSnapshot:10,commissionAmountSnapshot:100000}], delivery:null };
+    const { prisma, created }=buildPrismaMock(order); const service=new LedgerService(prisma as any,auditLogMock);
+    await service.onRefundProcessed({ orderId: order.id, amountKobo: 915000, refundId: 'refund-promo-1', paymentId: 'payment-promo-1' });
+    expect(created.find(e=>e.type===LedgerEntryType.PROMOTION && e.amount > 0).amount).toBe(100000);
+  });
+
 });
