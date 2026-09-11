@@ -2,7 +2,7 @@ const { PrismaClient } = require('@prisma/client');
 
 const prisma = new PrismaClient();
 
-// Temporary validation trigger; batch 3 removes this comment after validation.
+// Final batch validation trigger; removed after validation.
 
 async function main() {
   const serviceAreas = await prisma.serviceArea.findMany({
