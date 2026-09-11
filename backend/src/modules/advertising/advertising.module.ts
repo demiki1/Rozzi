@@ -1,0 +1,1 @@
+import { Module } from '@nestjs/common'; import { AdvertisingController } from './advertising.controller'; import { AdvertisingService } from './advertising.service'; import { AuditModule } from '../audit/audit.module'; @Module({imports:[AuditModule],controllers:[AdvertisingController],providers:[AdvertisingService],exports:[AdvertisingService]}) export class AdvertisingModule{}

@@ -1,0 +1,10 @@
+'use client';
+import {useEffect,useState} from 'react';
+import Link from 'next/link';
+import {api} from '../../lib/api';
+import {onNotification} from '../../lib/realtime';
+export default function Notifications(){
+ const [items,setItems]=useState<any[]>([]),[error,setError]=useState('');
+ useEffect(()=>{let alive=true; const load=()=>api('/api/notifications/mine').then(x=>alive&&setItems(x)).catch(e=>alive&&setError(e.message)); load(); const off=onNotification(n=>setItems(prev=>[n,...prev.filter(x=>x.id!==n.id)].slice(0,100))); return()=>{alive=false;off();}},[]);
+ return <main className="shell"><nav className="nav"><Link className="brand" href="/">ROZZI</Link><div className="navlinks"><Link href="/orders">Orders</Link><Link href="/cart">Cart</Link></div></nav><h1>Notifications</h1>{error&&<div className="error">{error}</div>}{items.length===0&&!error&&<div className="card muted">No notifications yet.</div>}{items.map(n=><div className="card" key={n.id}><b>{n.title}</b><p>{n.message}</p><small className="muted">{new Date(n.createdAt).toLocaleString()}</small></div>)}</main>
+}

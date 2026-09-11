@@ -1,0 +1,10 @@
+CREATE TYPE "RiderFinanceProductStatus" AS ENUM ('SUBMITTED','UNDER_REVIEW','APPROVED','DECLINED','CANCELLED');
+CREATE TABLE "rider_finance_applications" ("id" TEXT NOT NULL,"riderId" TEXT NOT NULL,"productCode" TEXT NOT NULL,"amount" INTEGER,"termMonths" INTEGER,"status" "RiderFinanceProductStatus" NOT NULL DEFAULT 'SUBMITTED',"notes" TEXT,"createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,"updatedAt" TIMESTAMP(3) NOT NULL,CONSTRAINT "rider_finance_applications_pkey" PRIMARY KEY ("id"));
+CREATE INDEX "rider_finance_applications_riderId_status_createdAt_idx" ON "rider_finance_applications"("riderId","status","createdAt");
+ALTER TABLE "rider_finance_applications" ADD CONSTRAINT "rider_finance_applications_riderId_fkey" FOREIGN KEY ("riderId") REFERENCES "riders"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+CREATE TABLE "rider_loyalty" ("id" TEXT NOT NULL,"riderId" TEXT NOT NULL,"points" INTEGER NOT NULL DEFAULT 0,"tier" TEXT NOT NULL DEFAULT 'Bronze',"createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,"updatedAt" TIMESTAMP(3) NOT NULL,CONSTRAINT "rider_loyalty_pkey" PRIMARY KEY ("id"));
+CREATE UNIQUE INDEX "rider_loyalty_riderId_key" ON "rider_loyalty"("riderId");
+ALTER TABLE "rider_loyalty" ADD CONSTRAINT "rider_loyalty_riderId_fkey" FOREIGN KEY ("riderId") REFERENCES "riders"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+CREATE TABLE "rider_loyalty_events" ("id" TEXT NOT NULL,"riderId" TEXT NOT NULL,"points" INTEGER NOT NULL,"reason" TEXT NOT NULL,"createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,CONSTRAINT "rider_loyalty_events_pkey" PRIMARY KEY ("id"));
+CREATE INDEX "rider_loyalty_events_riderId_createdAt_idx" ON "rider_loyalty_events"("riderId","createdAt");
+ALTER TABLE "rider_loyalty_events" ADD CONSTRAINT "rider_loyalty_events_riderId_fkey" FOREIGN KEY ("riderId") REFERENCES "riders"("id") ON DELETE CASCADE ON UPDATE CASCADE;

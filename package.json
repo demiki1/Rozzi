@@ -1,0 +1,35 @@
+{
+  "name": "rozzi-marketplace",
+  "private": true,
+  "workspaces": [
+    "backend",
+    "apps/admin",
+    "apps/customer",
+    "apps/vendor",
+    "apps/rider"
+  ],
+  "scripts": {
+    "install:all": "npm install --workspaces",
+    "build:apps": "npm run build --workspaces",
+    "dev:customer": "npm run dev --workspace apps/customer",
+    "dev:vendor": "npm run dev --workspace apps/vendor",
+    "dev:rider": "npm run dev --workspace apps/rider",
+    "dev:admin": "npm run dev --workspace apps/admin",
+    "build:backend": "npm run build --prefix backend",
+    "test:backend": "npm test --prefix backend",
+    "test:e2e": "npm run test:e2e --prefix backend",
+    "prisma:generate": "npm run prisma:generate --prefix backend",
+    "prisma:deploy": "npm run prisma:deploy --prefix backend",
+    "setup": "node scripts/setup-local.js",
+    "dev": "node scripts/dev-all.js",
+    "start:local": "npm run prisma:generate && npm run prisma:deploy && npm run dev",
+    "seed:local": "npm run prisma:seed --prefix backend"
+  },
+  "allowScripts": {
+    "@prisma/client@5.22.0": true,
+    "@prisma/engines@5.22.0": true,
+    "prisma@5.22.0": true,
+    "bcrypt@5.1.1": true,
+    "@nestjs/core@10.4.22": true
+  }
+}

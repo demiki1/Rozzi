@@ -1,0 +1,133 @@
+﻿import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { PrismaService } from '../../config/prisma.service';
+import { AuditLogService } from '../audit/audit-log.service';
+import { LedgerService } from '../finance/ledger.service';
+import { LedgerAccountType, LedgerEntryType, OrderStatus, RiderBonusType, RiderChallengeStatus } from '@prisma/client';
+
+const LEVELS = [
+  { name: 'Starter', minXp: 0, maxXp: 249, benefits: ['Access to standard delivery offers'] },
+  { name: 'Pro', minXp: 250, maxXp: 749, benefits: ['Priority access to selected offers', 'Pro badge'] },
+  { name: 'Elite', minXp: 750, maxXp: 1499, benefits: ['Higher-priority offers', 'Elite badge', 'Exclusive challenges'] },
+  { name: 'Champion', minXp: 1500, maxXp: Number.MAX_SAFE_INTEGER, benefits: ['Top-tier offer priority', 'Champion badge', 'Premium challenges'] },
+];
+
+const ACHIEVEMENTS = [
+  { code: 'FIRST_DELIVERY', name: 'First Ride', description: 'Complete your first delivery.', icon: 'ðŸ', target: 1 },
+  { code: 'TEN_DELIVERIES', name: 'Road Runner', description: 'Complete 10 deliveries.', icon: 'ðŸ›µ', target: 10 },
+  { code: 'FIFTY_DELIVERIES', name: 'Delivery Pro', description: 'Complete 50 deliveries.', icon: 'ðŸ†', target: 50 },
+  { code: 'FIVE_STAR', name: 'Five Star', description: 'Receive a 5-star rider rating.', icon: 'â­', target: 1 },
+  { code: 'HUNDRED_DELIVERIES', name: 'Century Rider', description: 'Complete 100 deliveries.', icon: 'ðŸ’¯', target: 100 },
+];
+
+@Injectable()
+export class RiderPerformanceService {
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditLogService, private readonly ledger: LedgerService) {}
+
+  private async rider(ownerUserId: string) {
+    const rider = await this.prisma.rider.findUnique({ where: { ownerUserId } });
+    if (!rider) throw new NotFoundException('No rider profile found for this account.');
+    return rider;
+  }
+
+  private async metrics(riderId: string) {
+    const [reviews, attempts, deliveries, todayDeliveries, weeklyDeliveries] = await Promise.all([
+      this.prisma.review.findMany({ where: { riderId, riderRating: { not: null } }, select: { riderRating: true } }),
+      this.prisma.deliveryAttempt.findMany({ where: { riderId }, select: { status: true } }),
+      this.prisma.delivery.findMany({ where: { riderId }, select: { id: true, assignedAt: true, deliveredAt: true, order: { select: { status: true } } } }),
+      this.prisma.delivery.count({ where: { riderId, deliveredAt: { gte: new Date(new Date().setHours(0,0,0,0)) } } }),
+      this.prisma.delivery.count({ where: { riderId, deliveredAt: { gte: new Date(Date.now() - 7 * 86400000) } } }),
+    ]);
+    const ratings = reviews.map(r => r.riderRating || 0).filter(Boolean);
+    const rating = ratings.length ? Number((ratings.reduce((a,b)=>a+b,0)/ratings.length).toFixed(2)) : 0;
+    const accepted = attempts.filter(a=>a.status==='ACCEPTED').length;
+    const responded = attempts.filter(a=>['ACCEPTED','DECLINED','TIMED_OUT'].includes(a.status)).length;
+    const acceptanceRate = responded ? Math.round(accepted/responded*100) : 0;
+    const completed = deliveries.filter(d=>d.deliveredAt).length;
+    const terminal = deliveries.filter(d=>d.order.status===OrderStatus.DELIVERED || d.order.status===OrderStatus.CANCELLED || d.order.status===OrderStatus.FAILED || d.order.status===OrderStatus.REFUNDED).length;
+    const completionRate = terminal ? Math.round(completed/terminal*100) : 0;
+    const cancelledStatuses: OrderStatus[] = [OrderStatus.CANCELLED, OrderStatus.FAILED]; const cancelled = deliveries.filter(d=>cancelledStatuses.includes(d.order.status)).length;
+    const cancellationRate = terminal ? Math.round(cancelled/terminal*100) : 0;
+    const completedWithTimes = deliveries.filter(d=>d.assignedAt && d.deliveredAt);
+    const avgMinutes = completedWithTimes.length ? Math.round(completedWithTimes.reduce((s,d)=>s+(d.deliveredAt!.getTime()-d.assignedAt!.getTime())/60000,0)/completedWithTimes.length) : 0;
+    // There is no contractual ETA field in the current delivery model. For a transparent operational proxy,
+    // on-time is measured as assigned -> delivered within 45 minutes; this is displayed as a proxy in the UI.
+    const onTime = completedWithTimes.length ? Math.round(completedWithTimes.filter(d=>d.deliveredAt!.getTime()-d.assignedAt!.getTime()<=45*60000).length/completedWithTimes.length*100) : 0;
+    const score = Math.round(Math.max(0,Math.min(100,
+      (rating ? rating/5*30 : 0) + acceptanceRate/100*20 + completionRate/100*20 + onTime/100*20 + (100-cancellationRate)/100*10
+    )));
+    const xp = completed*10 + ratings.filter(r=>r===5).length*5;
+    return { rating, reviewCount: ratings.length, acceptanceRate, completionRate, cancellationRate, onTimeRate: onTime, averageDeliveryMinutes: avgMinutes, completedDeliveries: completed, todayDeliveries, weeklyDeliveries, riderScore: score, xp };
+  }
+
+  private level(xp: number) {
+    const current = [...LEVELS].reverse().find(l=>xp>=l.minXp) || LEVELS[0];
+    const next = LEVELS.find(l=>l.minXp>xp);
+    return { current: current.name, xp, next: next?.name || null, xpToNext: next ? next.minXp-xp : 0, progress: next ? Math.round((xp-current.minXp)/(next.minXp-current.minXp)*100) : 100, benefits: current.benefits };
+  }
+
+  private async syncAchievements(riderId: string, m: any) {
+    const earned: any[] = [];
+    for (const a of ACHIEVEMENTS) {
+      const qualifies = a.code==='FIRST_DELIVERY' ? m.completedDeliveries>=1 : a.code==='TEN_DELIVERIES' ? m.completedDeliveries>=10 : a.code==='FIFTY_DELIVERIES' ? m.completedDeliveries>=50 : a.code==='HUNDRED_DELIVERIES' ? m.completedDeliveries>=100 : m.rating>=5;
+      if (qualifies) {
+        earned.push(await this.prisma.riderAchievement.upsert({ where:{ riderId_code:{riderId,code:a.code}}, update:{}, create:{riderId,code:a.code,name:a.name,description:a.description,icon:a.icon} }));
+      }
+    }
+    return earned;
+  }
+
+
+  async overview(ownerUserId: string) {
+    const rider = await this.rider(ownerUserId);
+    const m = await this.metrics(rider.id);
+    const achievements = await this.syncAchievements(rider.id,m);
+    const bonuses = await this.prisma.riderBonus.findMany({ where:{riderId:rider.id}, orderBy:{earnedAt:'desc'}, take:12 });
+    const challenges = await this.challengeList(rider.id);
+    return { metrics:m, level:this.level(m.xp), achievements, bonuses, challenges, scoreBreakdown:{rating:30,acceptance:20,completion:20,onTime:20,cancellation:10}, onTimeDefinition:'Operational proxy: delivery completed within 45 minutes of assignment because the current delivery model has no contractual ETA field.' };
+  }
+
+  async performance(ownerUserId: string, days=30) {
+    const rider = await this.rider(ownerUserId);
+    const m = await this.metrics(rider.id);
+    const from = new Date(Date.now()-Math.max(1,Math.min(365,Number(days)||30))*86400000);
+    const rows = await this.prisma.delivery.findMany({ where:{riderId:rider.id,createdAt:{gte:from}}, select:{createdAt:true,deliveredAt:true} });
+    const trend = new Map<string,number>();
+    for(const r of rows){const d=r.createdAt.toISOString().slice(0,10);trend.set(d,(trend.get(d)||0)+(r.deliveredAt?1:0));}
+    return {range:{from:from.toISOString(),to:new Date().toISOString()},metrics:m,daily:Array.from(trend,([date,completed])=>({date,completed})).sort((a,b)=>a.date.localeCompare(b.date))};
+  }
+
+  async achievementsList(ownerUserId:string){const rider=await this.rider(ownerUserId); const m=await this.metrics(rider.id); await this.syncAchievements(rider.id,m); return this.prisma.riderAchievement.findMany({where:{riderId:rider.id},orderBy:{earnedAt:'desc'}});}
+
+  async bonusList(ownerUserId:string){const rider=await this.rider(ownerUserId); return this.prisma.riderBonus.findMany({where:{riderId:rider.id},orderBy:{earnedAt:'desc'},take:100});}
+
+  private async challengeList(riderId:string){
+    const now=new Date(); const start=new Date(now); start.setHours(0,0,0,0); const end=new Date(start); end.setDate(end.getDate()+1);
+    const weekStart=new Date(start); weekStart.setDate(weekStart.getDate()-weekStart.getDay()); const weekEnd=new Date(weekStart); weekEnd.setDate(weekEnd.getDate()+7);
+    const defs=[{code:'DAILY_3',title:'3 deliveries today',description:'Complete 3 deliveries today.',target:3,rewardAmount:5000,startsAt:start,endsAt:end},{code:'WEEKLY_20',title:'20 deliveries this week',description:'Complete 20 deliveries this week.',target:20,rewardAmount:25000,startsAt:weekStart,endsAt:weekEnd}];
+    const out=[]; for(const d of defs){let row=await this.prisma.riderChallengeProgress.findUnique({where:{riderId_code_startsAt:{riderId,code:d.code,startsAt:d.startsAt}}}); if(!row) row=await this.prisma.riderChallengeProgress.create({data:{riderId,...d}}); const count=await this.prisma.delivery.count({where:{riderId,deliveredAt:{gte:d.startsAt,lt:d.endsAt}}}); const progress=Math.min(d.target,count); if(row.status==='ACTIVE' && progress>=d.target) row=await this.prisma.riderChallengeProgress.update({where:{id:row.id},data:{progress,status:RiderChallengeStatus.COMPLETED,completedAt:new Date()}}); else if(row.progress!==progress && row.status==='ACTIVE') row=await this.prisma.riderChallengeProgress.update({where:{id:row.id},data:{progress}}); out.push(row);}
+    return out;
+  }
+
+  async challenges(ownerUserId:string){const rider=await this.rider(ownerUserId);return this.challengeList(rider.id);}
+
+  async claimChallenge(ownerUserId:string,id:string){
+    const rider=await this.rider(ownerUserId); const c=await this.prisma.riderChallengeProgress.findFirst({where:{id,riderId:rider.id}}); if(!c)throw new NotFoundException('Challenge not found.'); if(c.status!==RiderChallengeStatus.COMPLETED)throw new BadRequestException('Challenge is not complete yet.');
+    const reference=`challenge:${c.id}`; const exists=await this.prisma.riderBonus.findUnique({where:{reference}}); if(exists)return exists;
+    const bonus=await this.prisma.riderBonus.create({data:{riderId:rider.id,type:RiderBonusType.CHALLENGE,title:c.title,description:c.description,amount:c.rewardAmount,reference}});
+    const entry=await this.ledger.record({type:LedgerEntryType.ADJUSTMENT,accountType:LedgerAccountType.RIDER,accountId:rider.id,amount:c.rewardAmount,description:`Challenge reward: ${c.title}`,idempotencyKey:`rider-bonus:${bonus.id}`});
+    await this.prisma.riderBonus.update({where:{id:bonus.id},data:{ledgerEntryId:entry.id}}); await this.prisma.riderChallengeProgress.update({where:{id:c.id},data:{status:RiderChallengeStatus.CLAIMED,claimedAt:new Date()}}); return {...bonus,ledgerEntryId:entry.id};
+  }
+
+  async referrals(ownerUserId: string) {
+    await this.rider(ownerUserId);
+    throw new BadRequestException('Rider referral rewards have been discontinued.');
+  }
+
+  async useReferral(ownerUserId: string, code: string) {
+    await this.rider(ownerUserId);
+    void code;
+    throw new BadRequestException('Rider referral rewards have been discontinued.');
+  }
+}
+
+

@@ -1,0 +1,14 @@
+import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common'; import { AdvertisingService } from './advertising.service'; import { Public } from '../../common/decorators/public.decorator'; import { CurrentUser } from '../../common/decorators/current-user.decorator'; import { Roles } from '../../common/decorators/roles.decorator'; import { AdminRoles } from '../../common/decorators/admin-roles.decorator'; import { RolesGuard } from '../../common/guards/roles.guard'; import { AdminRolesGuard } from '../../common/guards/admin-roles.guard'; import { UserRole, AdminRole } from '@prisma/client';
+@Controller('api/advertising') export class AdvertisingController { constructor(private readonly s:AdvertisingService){}
+ @Public() @Get('banners') banners(){return this.s.publicBanners()}; @Public() @Get('banners/:placement') bannersP(@Param('placement') p:string){return this.s.publicBanners(p)}
+ @Public() @Get('ads') ads(){return this.s.publicAds()}; @Public() @Get('ads/:placement') adsP(@Param('placement') p:string){return this.s.publicAds(p)}
+ @Public() @Post('ads/:id/impression') impression(@Param('id') id:string){return this.s.impression(id)} @Public() @Post('ads/:id/click') click(@Param('id') id:string){return this.s.click(id)}
+ @UseGuards(RolesGuard,AdminRolesGuard) @Roles(UserRole.ADMIN) @AdminRoles(AdminRole.CONTENT_ADMIN) @Get('admin/banners') adminBanners(){return this.s.listBanners()}
+ @UseGuards(RolesGuard,AdminRolesGuard) @Roles(UserRole.ADMIN) @AdminRoles(AdminRole.CONTENT_ADMIN) @Post('admin/banners') createB(@CurrentUser()u:{userId:string},@Body()d:any){return this.s.createBanner(d,u.userId)}
+ @UseGuards(RolesGuard,AdminRolesGuard) @Roles(UserRole.ADMIN) @AdminRoles(AdminRole.CONTENT_ADMIN) @Patch('admin/banners/:id') updateB(@CurrentUser()u:{userId:string},@Param('id')id:string,@Body()d:any){return this.s.updateBanner(id,d,u.userId)}
+ @UseGuards(RolesGuard,AdminRolesGuard) @Roles(UserRole.ADMIN) @AdminRoles(AdminRole.CONTENT_ADMIN) @Delete('admin/banners/:id') deleteB(@CurrentUser()u:{userId:string},@Param('id')id:string){return this.s.deleteBanner(id,u.userId)}
+ @UseGuards(RolesGuard,AdminRolesGuard) @Roles(UserRole.ADMIN) @AdminRoles(AdminRole.CONTENT_ADMIN) @Get('admin/ads') adminAds(){return this.s.listAds()}
+ @UseGuards(RolesGuard,AdminRolesGuard) @Roles(UserRole.ADMIN) @AdminRoles(AdminRole.CONTENT_ADMIN) @Post('admin/ads') createA(@CurrentUser()u:{userId:string},@Body()d:any){return this.s.createAd(d,u.userId)}
+ @UseGuards(RolesGuard,AdminRolesGuard) @Roles(UserRole.ADMIN) @AdminRoles(AdminRole.CONTENT_ADMIN) @Patch('admin/ads/:id') updateA(@CurrentUser()u:{userId:string},@Param('id')id:string,@Body()d:any){return this.s.updateAd(id,d,u.userId)}
+ @UseGuards(RolesGuard,AdminRolesGuard) @Roles(UserRole.ADMIN) @AdminRoles(AdminRole.CONTENT_ADMIN) @Delete('admin/ads/:id') deleteA(@CurrentUser()u:{userId:string},@Param('id')id:string){return this.s.deleteAd(id,u.userId)}
+}

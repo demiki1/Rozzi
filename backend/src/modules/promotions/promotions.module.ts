@@ -1,0 +1,1 @@
+import { Module } from '@nestjs/common'; import { PromotionsService } from './promotions.service'; import { PromotionsController } from './promotions.controller'; import { AuditModule } from '../audit/audit.module'; @Module({imports:[AuditModule],providers:[PromotionsService],controllers:[PromotionsController],exports:[PromotionsService]}) export class PromotionsModule {}

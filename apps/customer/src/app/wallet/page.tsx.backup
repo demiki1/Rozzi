@@ -1,0 +1,88 @@
+'use client';
+
+import { Suspense, useEffect, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
+import Link from 'next/link';
+import { api, post } from '../../lib/api';
+
+const money = (k = 0) => `₦${(Number(k) / 100).toLocaleString('en-NG', { minimumFractionDigits: 2 })}`;
+
+function WalletContent() {
+  const search = useSearchParams();
+  const [wallet, setWallet] = useState<any>();
+  const [amount, setAmount] = useState('');
+  const [bankName, setBankName] = useState('');
+  const [accountName, setAccountName] = useState('');
+  const [accountNumber, setAccountNumber] = useState('');
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    try { setWallet(await api('/api/wallet')); } catch (e: any) { setError(e.message); }
+  };
+  useEffect(() => { load(); }, []);
+  useEffect(() => { const ref = search.get('topup_reference'); if (!ref) return; (async () => { try { setMessage('Verifying wallet funding…'); await post('/api/wallet/top-up/verify', { reference: ref }); setMessage('Wallet funded successfully.'); await load(); window.history.replaceState({}, '', '/wallet'); } catch (e: any) { setError(e.message); } })(); }, [search]);
+
+  async function topUp() {
+    const naira = Number(amount);
+    if (!Number.isFinite(naira) || naira <= 0) return setError('Enter a valid top-up amount.');
+    setBusy(true); setError(''); setMessage('');
+    try {
+      const r = await post('/api/wallet/top-up', { amount: Math.round(naira * 100) });
+      if (!r.authorizationUrl) throw new Error('No payment authorization URL was returned.');
+      window.location.href = r.authorizationUrl;
+    } catch (e: any) { setError(e.message); setBusy(false); }
+  }
+
+  async function withdraw() {
+    const naira = Number(amount);
+    if (!Number.isFinite(naira) || naira <= 0) return setError('Enter a valid withdrawal amount.');
+    if (!bankName || !accountName || !/^\d{10}$/.test(accountNumber)) return setError('Enter bank name, account name and a valid 10-digit account number.');
+    setBusy(true); setError(''); setMessage('');
+    try {
+      const r = await post('/api/wallet/withdraw', { amount: Math.round(naira * 100), bankName, accountName, accountNumber });
+      setMessage(`Withdrawal ${r.reference} requested.`); setAmount(''); setAccountNumber(''); await load();
+    } catch (e: any) { setError(e.message); } finally { setBusy(false); }
+  }
+
+  return <main className="shell">
+    <Link href="/">← ROZZI</Link>
+    <h1>My Wallet</h1>
+    {error && <div className="error">{error}</div>}
+    {message && <div className="success">{message}</div>}
+    {!wallet ? <p>Loading wallet…</p> : <>
+      <section className="card">
+        <p>Available balance</p>
+        <h2>{money(wallet.balance)}</h2>
+        <p>{wallet.currency}</p>
+      </section>
+      <section className="card formgrid">
+        <h2>Fund or withdraw</h2>
+        <label>Amount (₦)<input className="input" value={amount} onChange={e => setAmount(e.target.value)} placeholder="1000" inputMode="decimal" /></label>
+        <button className="btn" disabled={busy} onClick={topUp}>{busy ? 'Working…' : 'Add money'}</button>
+        <hr />
+        <label>Bank name<input className="input" value={bankName} onChange={e => setBankName(e.target.value)} /></label>
+        <label>Account name<input className="input" value={accountName} onChange={e => setAccountName(e.target.value)} /></label>
+        <label>Account number<input className="input" value={accountNumber} onChange={e => setAccountNumber(e.target.value.replace(/\D/g, '').slice(0, 10))} inputMode="numeric" /></label>
+        <button className="btn secondary" disabled={busy} onClick={withdraw}>Request withdrawal</button>
+      </section>
+      <section className="card"><h2>Recent transactions</h2>{wallet.transactions?.length ? wallet.transactions.map((t: any) => <div key={t.id} className="row"><span>{String(t.type).replaceAll('_', ' ')}</span><strong>{money(t.amount)}</strong></div>) : <p>No wallet transactions yet.</p>}</section>
+    </>}
+  </main>;
+}
+
+export default function WalletPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="shell">
+          <h1>ROZZI Wallet</h1>
+          <p>Loading wallet…</p>
+        </main>
+      }
+    >
+      <WalletContent />
+    </Suspense>
+  );
+}

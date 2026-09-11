@@ -1,0 +1,4 @@
+import { IsArray, IsDateString, IsEnum, IsInt, IsOptional, IsString, Min } from 'class-validator';
+export enum VendorAdObjectiveDto { AWARENESS='AWARENESS', TRAFFIC='TRAFFIC', ORDERS='ORDERS' }
+export class CreateCampaignDto { @IsString() name:string; @IsEnum(VendorAdObjectiveDto) objective:VendorAdObjectiveDto; @IsInt() @Min(0) budgetAmount:number; @IsDateString() startsAt:string; @IsDateString() endsAt:string; @IsOptional() @IsString() outletId?:string; @IsOptional() @IsArray() @IsString({each:true}) productIds?:string[]; }
+export class UpdateCampaignDto { @IsOptional() @IsString() name?:string; @IsOptional() @IsInt() @Min(0) budgetAmount?:number; @IsOptional() @IsDateString() startsAt?:string; @IsOptional() @IsDateString() endsAt?:string; @IsOptional() @IsString() outletId?:string|null; @IsOptional() @IsArray() @IsString({each:true}) productIds?:string[]; }

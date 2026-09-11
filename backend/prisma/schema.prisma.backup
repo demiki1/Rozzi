@@ -1,0 +1,1185 @@
+// ==========================================================================
+// PHASE 1 SCHEMA — Auth + Location architecture
+// Later phases (vendors, products, orders, payments, delivery, ledger) will
+// extend this file. Kept in one file for now (modular monolith, single DB).
+// ==========================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// --------------------------------------------------------------------------
+// AUTH / USERS
+// --------------------------------------------------------------------------
+
+enum UserRole {
+  CUSTOMER
+  VENDOR
+  RIDER
+  ADMIN
+}
+
+enum AdminRole {
+  SUPER_ADMIN
+  OPERATIONS_ADMIN
+  FINANCE_ADMIN
+  VENDOR_ADMIN
+  RIDER_ADMIN
+  SUPPORT_ADMIN
+  CONTENT_ADMIN
+}
+
+model User {
+  id            String    @id @default(uuid())
+  email         String?   @unique
+  phone         String?   @unique
+  passwordHash  String
+  fullName      String
+  role          UserRole
+  adminRole     AdminRole?
+  isEmailVerified Boolean @default(false)
+  isPhoneVerified Boolean @default(false)
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  refreshTokens RefreshToken[]
+  auditLogs     AuditLog[]     @relation("AuditActor")
+  vendor        Vendor?
+  cart          Cart?
+  addresses     Address[]
+  orders        Order[]        @relation("CustomerOrders")
+  rider         Rider?
+  notifications Notification[]
+  reviewsGiven Review[] @relation("ReviewCustomer")
+  supportTickets SupportTicket[]
+  passwordResetTokens PasswordResetToken[]
+  verificationTokens VerificationToken[]
+
+  @@index([role])
+  @@map("users")
+}
+
+enum VerificationTokenType {
+  EMAIL_VERIFICATION
+  PHONE_VERIFICATION
+}
+
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId, expiresAt])
+  @@map("password_reset_tokens")
+}
+
+model VerificationToken {
+  id        String                @id @default(uuid())
+  userId    String
+  user      User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      VerificationTokenType
+  tokenHash String                @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime              @default(now())
+
+  @@index([userId, type, expiresAt])
+  @@map("verification_tokens")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String
+  expiresAt DateTime
+  revoked   Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+// --------------------------------------------------------------------------
+// LOCATION ARCHITECTURE
+// Generic self-referencing tree: Country -> State -> City -> University(optional)
+// -> Campus(optional) -> ServiceArea -> DeliveryZone.
+// No location NAME is ever referenced in business logic — only IDs and `type`.
+// --------------------------------------------------------------------------
+
+enum LocationType {
+  COUNTRY
+  STATE
+  CITY
+  UNIVERSITY
+  CAMPUS
+  NEIGHBORHOOD
+}
+
+model Location {
+  id        String       @id @default(uuid())
+  parentId  String?
+  parent    Location?    @relation("LocationTree", fields: [parentId], references: [id])
+  children  Location[]   @relation("LocationTree")
+  type      LocationType
+  name      String
+  isActive  Boolean      @default(true)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  serviceAreas ServiceArea[]
+
+  @@index([parentId])
+  @@index([type])
+  @@map("locations")
+}
+
+enum ServiceAreaStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  INACTIVE
+}
+
+// The operational unit. A vendor, order, or waitlist entry always points
+// here — never directly at a raw Location name like "FUTO".
+model ServiceArea {
+  id                     String            @id @default(uuid())
+  locationId             String
+  location               Location          @relation(fields: [locationId], references: [id])
+  name                   String
+  status                 ServiceAreaStatus @default(DRAFT)
+  defaultDeliveryRadiusKm Decimal          @default(5) @db.Decimal(6, 2)
+  minimumOrderAmount     Int               @default(0) // kobo
+  baseDeliveryFee        Int               @default(0) // kobo
+  perKmDeliveryFee       Int               @default(0) // kobo
+  serviceFeeAmount       Int               @default(0) // kobo, flat; can evolve to % later
+  operatingHoursStart    String            @default("08:00")
+  operatingHoursEnd      String            @default("23:00")
+  createdAt              DateTime          @default(now())
+  updatedAt              DateTime          @updatedAt
+
+  deliveryZones DeliveryZone[]
+  waitlist      WaitlistEntry[]
+  vendorLocations VendorLocation[]
+  orders          Order[]
+  riderZones      RiderZone[]
+
+  @@index([locationId])
+  @@index([status])
+  @@map("service_areas")
+}
+
+model DeliveryZone {
+  id                 String      @id @default(uuid())
+  serviceAreaId      String
+  serviceArea        ServiceArea @relation(fields: [serviceAreaId], references: [id], onDelete: Cascade)
+  name               String
+  isActive           Boolean     @default(true)
+  radiusKm           Decimal?    @db.Decimal(6, 2)
+  polygon            Json?       // GeoJSON polygon, optional alt to radius
+  deliveryFeeOverride Int?       // kobo, null = use service area default
+  maxDistanceKm      Decimal?    @db.Decimal(6, 2)
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+
+  orders Order[]
+
+  @@index([serviceAreaId])
+  @@map("delivery_zones")
+}
+
+// Customers in a not-yet-launched area land here (see spec §4).
+model WaitlistEntry {
+  id             String       @id @default(uuid())
+  phone          String?
+  email          String?
+  serviceAreaId  String?
+  serviceArea    ServiceArea? @relation(fields: [serviceAreaId], references: [id])
+  requestedPlace String?      // free text if no matching ServiceArea exists yet
+  notified       Boolean      @default(false)
+  createdAt      DateTime     @default(now())
+
+  @@map("waitlist_entries")
+}
+
+// --------------------------------------------------------------------------
+// AUDIT LOG (used from Phase 1 onward, every admin mutating action)
+// --------------------------------------------------------------------------
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String
+  actor      User     @relation("AuditActor", fields: [actorId], references: [id])
+  action     String
+  entityType String
+  entityId   String?
+  before     Json?
+  after      Json?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  @@index([actorId])
+  @@index([entityType, entityId])
+  @@map("audit_logs")
+}
+
+// --------------------------------------------------------------------------
+// PLATFORM SETTINGS (global, key-value, admin editable — §54)
+// --------------------------------------------------------------------------
+
+model Setting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+
+  @@map("settings")
+}
+
+// ==========================================================================
+// PHASE 2 — Categories, Vendors, Products, Cart
+// ==========================================================================
+
+// --------------------------------------------------------------------------
+// CATEGORIES
+// Admin-managed, not hard-coded (§25). Seed data provides Food/Groceries/
+// etc, but the schema places no constraint on what categories can exist.
+// --------------------------------------------------------------------------
+
+model Category {
+  id          String    @id @default(uuid())
+  name        String
+  iconUrl     String?
+  imageUrl    String?
+  displayOrder Int      @default(0)
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  products Product[]
+
+  @@map("categories")
+}
+
+// --------------------------------------------------------------------------
+// VENDOR TYPES
+// Configurable (§8) — admin can add "Bakery" etc without a code change.
+// Seed will create the initial set (Restaurant, Grocery Store, Pharmacy...).
+// --------------------------------------------------------------------------
+
+model VendorType {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  vendors Vendor[]
+
+  @@map("vendor_types")
+}
+
+enum VendorStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  SUSPENDED
+  CLOSED
+}
+
+enum DeliveryModel {
+  PLATFORM_DELIVERY // Model A
+  SELF_DELIVERY     // Model B
+  CUSTOMER_PICKUP   // Model C
+}
+
+model Vendor {
+  id             String        @id @default(uuid())
+  ownerUserId    String        @unique
+  owner          User          @relation(fields: [ownerUserId], references: [id])
+  vendorTypeId   String
+  vendorType     VendorType    @relation(fields: [vendorTypeId], references: [id])
+  storeName      String
+  logoUrl        String?
+  coverImageUrl  String?
+  description    String?
+  phone          String?
+  email          String?
+  status         VendorStatus  @default(PENDING)
+  isOpen         Boolean       @default(false) // manual open/closed toggle, independent of approval status
+  operatingHoursStart String? 
+  operatingHoursEnd   String?
+  commissionRate Decimal       @default(10) @db.Decimal(5, 2) // percent; admin-configurable per vendor
+  supportedDeliveryModels DeliveryModel[] @default([PLATFORM_DELIVERY])
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  locations VendorLocation[]
+  products  Product[]
+  documents VendorDocument[]
+  carts     Cart[]
+  orders    Order[]
+  reviews   Review[] @relation("ReviewVendor")
+
+  @@index([status])
+  @@index([vendorTypeId])
+  @@map("vendors")
+}
+
+// A vendor can serve one or more service areas (§44).
+model VendorLocation {
+  id            String      @id @default(uuid())
+  vendorId      String
+  vendor        Vendor      @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  serviceAreaId String
+  serviceArea   ServiceArea @relation(fields: [serviceAreaId], references: [id])
+  address       String?
+  latitude      Decimal?    @db.Decimal(10, 7)
+  longitude     Decimal?    @db.Decimal(10, 7)
+  createdAt     DateTime    @default(now())
+
+  @@unique([vendorId, serviceAreaId])
+  @@index([serviceAreaId])
+  @@map("vendor_locations")
+}
+
+model VendorDocument {
+  id         String   @id @default(uuid())
+  vendorId   String
+  vendor     Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  docType    String
+  fileUrl    String
+  verified   Boolean  @default(false)
+  uploadedAt DateTime @default(now())
+
+  @@map("vendor_documents")
+}
+
+// --------------------------------------------------------------------------
+// PRODUCTS
+// --------------------------------------------------------------------------
+
+model Product {
+  id               String    @id @default(uuid())
+  vendorId         String
+  vendor           Vendor    @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  categoryId       String
+  category         Category  @relation(fields: [categoryId], references: [id])
+  name             String
+  description      String?
+  sku              String?
+  priceAmount      Int       // kobo
+  discountAmount   Int?      // kobo, null = no discount
+  unit             String?   // e.g. "piece", "pack", "kg"
+  weightGrams      Int?
+  isAvailable      Boolean   @default(true)
+  preparationTimeMinutes Int?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  images   ProductImage[]
+  variants ProductVariant[]
+  inventory Inventory?
+  cartItems CartItem[]
+  reviews   Review[]
+
+  @@index([vendorId])
+  @@index([categoryId])
+  @@map("products")
+}
+
+model ProductImage {
+  id        String  @id @default(uuid())
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  url       String
+  sortOrder Int     @default(0)
+
+  @@map("product_images")
+}
+
+// e.g. size/flavor variants. Each variant can override price; stock is
+// still tracked at the Inventory level, keyed by product OR variant.
+model ProductVariant {
+  id             String   @id @default(uuid())
+  productId      String
+  product        Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  name           String   // e.g. "Large", "Chicken flavor"
+  priceOverride  Int?     // kobo, null = use product price
+  createdAt      DateTime @default(now())
+
+  inventory Inventory?
+
+  @@map("product_variants")
+}
+
+// One row per sellable unit (product, or product+variant). Stock changes
+// go through StockService using a DB transaction + row lock (see §41) —
+// never a plain read-then-write from application code.
+model Inventory {
+  id         String          @id @default(uuid())
+  productId  String?         @unique
+  product    Product?        @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variantId  String?         @unique
+  variant    ProductVariant? @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  quantity   Int             @default(0)
+  updatedAt  DateTime        @updatedAt
+
+  @@map("inventory")
+}
+
+// --------------------------------------------------------------------------
+// CART
+// MVP rule (§42): one vendor per cart. Enforced in CartService, not just
+// in the UI — adding a product from a different vendor clears/rejects
+// rather than silently mixing vendors.
+// --------------------------------------------------------------------------
+
+model Cart {
+  id         String     @id @default(uuid())
+  customerId String     @unique
+  customer   User       @relation(fields: [customerId], references: [id])
+  vendorId   String?    // null until the first item is added
+  vendor     Vendor?    @relation(fields: [vendorId], references: [id])
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  items CartItem[]
+
+  @@map("carts")
+}
+
+model CartItem {
+  id         String   @id @default(uuid())
+  cartId     String
+  cart       Cart     @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  productId  String
+  product    Product  @relation(fields: [productId], references: [id])
+  variantId  String?
+  quantity   Int
+  note       String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([cartId, productId, variantId])
+  @@map("cart_items")
+}
+
+// ==========================================================================
+// PHASE 4 — Addresses, Orders, Order Lifecycle
+// ==========================================================================
+
+// --------------------------------------------------------------------------
+// CUSTOMER ADDRESSES (§84)
+// --------------------------------------------------------------------------
+
+model Address {
+  id           String   @id @default(uuid())
+  customerId   String
+  customer     User     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  label        String   // "Home" / "Hostel" / "School" / "Office" / "Other"
+  addressText  String
+  landmark     String?
+  instructions String?  // e.g. "Hostel B, Block 3", "Meet at Main Gate"
+  latitude     Decimal? @db.Decimal(10, 7)
+  longitude    Decimal? @db.Decimal(10, 7)
+  createdAt    DateTime @default(now())
+
+  orders Order[]
+
+  @@index([customerId])
+  @@map("addresses")
+}
+
+// --------------------------------------------------------------------------
+// ORDER LIFECYCLE (§14)
+// Full status list per spec. Not every transition is reachable yet — rider
+// states (RIDER_SEARCHING onward) require the dispatch system built in
+// Phase 7. The state machine already validates them so Phase 7 only has to
+// call transition(), never invent new logic here.
+// --------------------------------------------------------------------------
+
+enum OrderStatus {
+  PENDING_PAYMENT
+  PAID
+  PENDING_VENDOR
+  ACCEPTED
+  PREPARING
+  READY_FOR_PICKUP
+  RIDER_SEARCHING
+  RIDER_ASSIGNED
+  RIDER_ARRIVED_PICKUP
+  PICKED_UP
+  IN_TRANSIT
+  RIDER_ARRIVED
+  DELIVERED
+  CANCELLED
+  FAILED
+  REFUNDED
+}
+
+enum OrderDeliveryType {
+  DELIVERY
+  PICKUP
+}
+
+model Order {
+  id                String            @id @default(uuid())
+  orderNumber       String            @unique // human-facing e.g. VEL-10001
+  customerId        String
+  customer          User              @relation("CustomerOrders", fields: [customerId], references: [id])
+  vendorId          String
+  vendor            Vendor            @relation(fields: [vendorId], references: [id])
+  serviceAreaId     String
+  serviceArea       ServiceArea       @relation(fields: [serviceAreaId], references: [id])
+  deliveryZoneId    String?
+  deliveryZone      DeliveryZone?     @relation(fields: [deliveryZoneId], references: [id])
+  deliveryType      OrderDeliveryType @default(DELIVERY)
+  deliveryModel     DeliveryModel     @default(PLATFORM_DELIVERY)
+  scheduledFor      DateTime?
+  addressId         String?
+  address           Address?          @relation(fields: [addressId], references: [id])
+
+  status            OrderStatus       @default(PENDING_PAYMENT)
+
+  // Amounts snapshotted in kobo at order-creation time — never recalculated
+  // later from "current" prices/fees, so a later admin fee change can't
+  // retroactively alter an existing order's total (§93 configurability
+  // must apply to NEW orders only, per that section's own example).
+  subtotalAmount    Int
+  deliveryFeeAmount Int
+  serviceFeeAmount  Int
+  discountAmount    Int               @default(0)
+  totalAmount       Int
+  commissionRateSnapshot Decimal      @db.Decimal(5, 2)
+
+  deliveryCode      String?           // OTP for delivery confirmation — wired up in Phase 7
+  customerNote      String?
+  cancelReason      String?
+
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  items         OrderItem[]
+  statusHistory OrderStatusHistory[]
+  payments      Payment[]
+  delivery      Delivery?
+  ledgerEntries LedgerEntry[]
+  refunds       Refund[]
+  review        Review?
+  tip           RiderTip?
+  promotionId   String?
+  promotion     Promotion? @relation(fields: [promotionId], references: [id])
+  promotionCode String?
+  supportTickets SupportTicket[]
+  passwordResetTokens PasswordResetToken[]
+  verificationTokens VerificationToken[]
+
+  @@index([customerId])
+  @@index([vendorId])
+  @@index([serviceAreaId])
+  @@index([status])
+  @@map("orders")
+}
+
+model OrderItem {
+  id             String  @id @default(uuid())
+  orderId        String
+  order          Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId      String
+  variantId      String?
+  // Snapshots — if the vendor edits the product name/price tomorrow, this
+  // order's receipt must still show what the customer actually bought.
+  nameSnapshot   String
+  unitPriceSnapshot Int  // kobo
+  quantity       Int
+  subtotalAmount Int     // kobo, unitPriceSnapshot * quantity
+
+  @@map("order_items")
+}
+
+model OrderStatusHistory {
+  id            String      @id @default(uuid())
+  orderId       String
+  order         Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  fromStatus    OrderStatus?
+  toStatus      OrderStatus
+  changedByUserId String?
+  note          String?
+  createdAt     DateTime    @default(now())
+
+  @@index([orderId])
+  @@map("order_status_history")
+}
+
+// ==========================================================================
+// PHASE 5 — Payments
+// Provider-abstracted: PaymentProviderName enum + a Payment/PaymentEvent
+// model that doesn't care which provider was used. Adding Flutterwave later
+// means writing a new adapter class, not touching this schema.
+// ==========================================================================
+
+enum PaymentProviderName {
+  PAYSTACK
+  FLUTTERWAVE
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  ABANDONED
+  REFUNDED
+}
+
+enum RefundStatus {
+  REQUESTED
+  PROCESSING
+  PROCESSED
+  FAILED
+}
+
+model Payment {
+  id            String              @id @default(uuid())
+  orderId       String
+  order         Order               @relation(fields: [orderId], references: [id])
+  provider      PaymentProviderName
+  reference     String              @unique // our reference, sent to the provider and echoed back
+  amount        Int                 // kobo — must equal order.totalAmount, re-checked at verify time
+  currency      String              @default("NGN")
+  status        PaymentStatus       @default(PENDING)
+  authorizationUrl String?
+  paidAt        DateTime?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  events PaymentEvent[]
+  refunds Refund[]
+
+  @@index([orderId])
+  @@index([status])
+  @@map("payments")
+}
+
+// Every webhook delivery and verify-call result is recorded here — this is
+// what makes webhook processing idempotent (§70, §71): a duplicate webhook
+// for the same (provider, providerReference, eventType) is rejected by the
+// unique constraint before it can double-process a payment.
+model Refund {
+  id              String       @id @default(uuid())
+  paymentId       String
+  payment         Payment      @relation(fields: [paymentId], references: [id])
+  orderId         String
+  order           Order        @relation(fields: [orderId], references: [id])
+  amount          Int
+  reason          String?
+  status          RefundStatus @default(REQUESTED)
+  providerReference String?
+  requestedByUserId String?
+  processedAt     DateTime?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@index([orderId])
+  @@index([paymentId])
+  @@index([status])
+  @@map("refunds")
+}
+
+model PaymentEvent {
+  id                String   @id @default(uuid())
+  paymentId         String
+  payment           Payment  @relation(fields: [paymentId], references: [id])
+  provider          PaymentProviderName
+  providerReference String
+  eventType         String   // e.g. "charge.success", "manual_verify"
+  rawPayload        Json
+  createdAt         DateTime @default(now())
+
+  @@unique([provider, providerReference, eventType])
+  @@index([paymentId])
+  @@map("payment_events")
+}
+
+// ==========================================================================
+// PHASE 6 — Riders
+// ==========================================================================
+
+// Unlike VendorType/Category (explicitly required to be admin-configurable,
+// §8/§25), the spec doesn't ask for vehicle types to be admin-editable, so
+// this stays a fixed enum. Revisit as a table if that assumption changes.
+enum VehicleType {
+  BICYCLE
+  MOTORCYCLE
+  TRICYCLE
+  CAR
+  VAN
+  ON_FOOT
+}
+
+// §11: PENDING -> UNDER_REVIEW -> APPROVED -> ACTIVE -> SUSPENDED.
+// Design note (flagging the ambiguity rather than quietly picking one
+// reading): the spec lists both APPROVED and ACTIVE as lifecycle states
+// without defining the difference from "online/offline". This
+// implementation treats APPROVED as "cleared by admin to start working"
+// and ACTIVE as "has gone online at least once" — i.e. ACTIVE is set
+// automatically the first time an approved rider goes online, rather than
+// being a separate admin action. `isOnline` remains a completely separate,
+// rider-controlled toggle on top of this. If your actual intent for ACTIVE
+// was different (e.g. a distinct admin activation step), this is a one-line
+// change in RidersService.goOnline — flagging it now rather than guessing
+// silently.
+enum RiderStatus {
+  PENDING
+  UNDER_REVIEW
+  APPROVED
+  ACTIVE
+  SUSPENDED
+}
+
+model Rider {
+  id             String       @id @default(uuid())
+  ownerUserId    String       @unique
+  owner          User         @relation(fields: [ownerUserId], references: [id])
+  address        String?
+  profilePhotoUrl String?
+  vehicleType    VehicleType
+  vehiclePlateNumber String?
+  emergencyContactName  String?
+  emergencyContactPhone String?
+  // Payout fields: intentionally minimal at this phase — no payout
+  // execution exists yet (that's Phase 10, alongside the ledger). Storing
+  // these now so onboarding can collect them once and not need a schema
+  // change later.
+  bankAccountName   String?
+  bankAccountNumber String?
+  bankName          String?
+  status         RiderStatus  @default(PENDING)
+  rejectionReason String?
+  isOnline       Boolean      @default(false)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  documents RiderDocument[]
+  zones     RiderZone[]
+  location  RiderLocation?
+  deliveries       Delivery[]
+  deliveryAttempts DeliveryAttempt[]
+  reviews           Review[] @relation("ReviewRider")
+  tips              RiderTip[]
+
+  @@index([status])
+  @@map("riders")
+}
+
+model RiderDocument {
+  id         String   @id @default(uuid())
+  riderId    String
+  rider      Rider    @relation(fields: [riderId], references: [id], onDelete: Cascade)
+  docType    String   // e.g. "drivers_license", "id_card", "vehicle_registration"
+  fileUrl    String
+  verified   Boolean  @default(false)
+  uploadedAt DateTime @default(now())
+
+  @@map("rider_documents")
+}
+
+// A rider can operate across multiple zones simultaneously (§44: "A rider
+// can operate in Zone A + Zone B").
+model RiderZone {
+  id            String      @id @default(uuid())
+  riderId       String
+  rider         Rider       @relation(fields: [riderId], references: [id], onDelete: Cascade)
+  serviceAreaId String
+  serviceArea   ServiceArea @relation(fields: [serviceAreaId], references: [id])
+  createdAt     DateTime    @default(now())
+
+  @@unique([riderId, serviceAreaId])
+  @@index([serviceAreaId])
+  @@map("rider_zones")
+}
+
+// Live position, updated frequently by the rider app. Kept as its own
+// single-row-per-rider table (rather than an append-only log) since Phase 7
+// dispatch only ever needs "where is this rider right now" — a location
+// history table can be added later if trip replay/auditing needs it.
+model RiderLocation {
+  riderId   String   @id
+  rider     Rider    @relation(fields: [riderId], references: [id], onDelete: Cascade)
+  latitude  Decimal  @db.Decimal(10, 7)
+  longitude Decimal  @db.Decimal(10, 7)
+  updatedAt DateTime @updatedAt
+
+  @@map("rider_locations")
+}
+
+// ==========================================================================
+// PHASE 7 — Delivery Dispatch
+// Order.status remains the single authoritative lifecycle field (via
+// OrderStateMachine, Phase 4). Delivery/DeliveryAttempt track the
+// dispatch-specific bookkeeping (who was offered, who accepted, distances)
+// that sits alongside that lifecycle rather than duplicating it.
+// ==========================================================================
+
+enum DeliveryAttemptStatus {
+  OFFERED
+  ACCEPTED
+  DECLINED
+  TIMED_OUT
+}
+
+model DeliveryGroup {
+  id          String   @id @default(uuid())
+  status      String   @default("OPEN")
+  maxOrders   Int      @default(2)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  deliveries Delivery[]
+
+  @@map("delivery_groups")
+}
+
+model Delivery {
+  id             String    @id @default(uuid())
+  orderId        String    @unique
+  order          Order     @relation(fields: [orderId], references: [id])
+  riderId        String?
+  rider          Rider?    @relation(fields: [riderId], references: [id])
+  groupId        String?
+  group          DeliveryGroup? @relation(fields: [groupId], references: [id])
+
+  // Snapshotted at dispatch time so ranking/history isn't affected by the
+  // vendor moving locations later.
+  pickupLatitude    Decimal? @db.Decimal(10, 7)
+  pickupLongitude   Decimal? @db.Decimal(10, 7)
+  dropoffLatitude   Decimal? @db.Decimal(10, 7)
+  dropoffLongitude  Decimal? @db.Decimal(10, 7)
+
+  attemptCount   Int       @default(0)
+  assignedAt     DateTime?
+  pickedUpAt     DateTime?
+  deliveredAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  attempts DeliveryAttempt[]
+
+  @@index([riderId])
+  @@index([groupId])
+  @@map("deliveries")
+}
+
+model RiderTip {
+  id              String   @id @default(uuid())
+  orderId         String   @unique
+  order           Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  riderId         String
+  rider           Rider    @relation(fields: [riderId], references: [id])
+  amount          Int
+  status          String   @default("PENDING")
+  ledgerEntryId   String?  @unique
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([riderId, status])
+  @@map("rider_tips")
+}
+
+// One row per rider offer. This is what makes the "Rider A declines -> offer
+// Rider B -> offer Rider C" flow from §13 auditable and replayable, and is
+// also the record that a lazy timeout check (see DispatchService) sweeps.
+model DeliveryAttempt {
+  id         String                @id @default(uuid())
+  deliveryId String
+  delivery   Delivery              @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  riderId    String
+  rider      Rider                 @relation(fields: [riderId], references: [id])
+  status     DeliveryAttemptStatus @default(OFFERED)
+  distanceKm Decimal?              @db.Decimal(6, 2)
+  offeredAt  DateTime              @default(now())
+  expiresAt  DateTime
+  respondedAt DateTime?
+
+  @@index([deliveryId])
+  @@index([riderId, status])
+  @@map("delivery_attempts")
+}
+
+// ==========================================================================
+// PHASE 9 — Notifications
+// ==========================================================================
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+  SMS
+  PUSH
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+model Notification {
+  id            String              @id @default(uuid())
+  userId        String
+  user          User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  channel       NotificationChannel
+  title         String
+  message       String
+  status        NotificationStatus  @default(PENDING)
+  relatedOrderId String?
+  createdAt     DateTime            @default(now())
+  sentAt        DateTime?
+
+  @@index([userId])
+  @@map("notifications")
+}
+
+// ==========================================================================
+// PHASE 10 — Financial Ledger, Settlements, and Reporting
+// ==========================================================================
+
+// §35: "Do not implement financial balances using simple balance = balance
+// + amount without an accounting trail." Every entry here is append-only —
+// nothing in the codebase ever UPDATEs or DELETEs a LedgerEntry. A
+// vendor/rider/platform "balance" is always DERIVED by summing entries at
+// query time (see LedgerService), never stored as a mutable column.
+//
+// HONESTY FLAG on scope: this is a single-entry ledger (each entry credits
+// or debits ONE account), not full double-entry bookkeeping (where every
+// entry has a matching opposite entry so the books always balance to
+// zero). Single-entry is enough to answer "what does the platform owe
+// vendor X" and produce an audit trail per §35–36, but a real accounting
+// system for tax/financial-statement purposes would want proper
+// double-entry. Flagging this now rather than presenting it as more rigorous
+// than it is.
+enum LedgerEntryType {
+  CUSTOMER_PAYMENT
+  VENDOR_EARNING
+  PLATFORM_COMMISSION
+  RIDER_EARNING
+  REFUND
+  PAYOUT
+  ADJUSTMENT
+  PROMOTION
+  PAYMENT_FEE
+}
+
+enum LedgerAccountType {
+  PLATFORM
+  VENDOR
+  RIDER
+  CUSTOMER
+}
+
+model LedgerEntry {
+  id          String            @id @default(uuid())
+  type        LedgerEntryType
+  accountType LedgerAccountType
+  // Null when accountType is PLATFORM (the platform doesn't need a foreign
+  // key to itself). Points at a Vendor.id or Rider.id otherwise —
+  // deliberately not a Prisma relation, since the target table depends on
+  // accountType; application code is responsible for interpreting it
+  // alongside accountType, same tradeoff as `Order.deliveryCode` needing no
+  // relation.
+  accountId   String?
+  orderId     String?
+  order       Order?            @relation(fields: [orderId], references: [id])
+  // Signed: positive increases the account's balance, negative decreases
+  // it. A PAYOUT entry is negative (money leaving the vendor/rider's
+  // pending balance because it's been paid out).
+  amount      Int
+  description String?
+  // Stable idempotency key for externally-triggered/event-driven bookings.
+  // Nullable so manual adjustments can still be recorded without one.
+  idempotencyKey String? @unique
+  createdAt   DateTime          @default(now())
+
+  @@index([accountType, accountId])
+  @@index([orderId])
+  @@index([type])
+  @@map("ledger_entries")
+}
+
+
+// ==========================================================================
+// PHASE 13 — Reviews, Promotions, Support, CMS
+// ==========================================================================
+
+enum PromotionType {
+  PERCENTAGE
+  FIXED_AMOUNT
+}
+
+model Promotion {
+  id              String        @id @default(uuid())
+  code            String        @unique
+  name            String
+  type            PromotionType
+  value           Int
+  minOrderAmount  Int             @default(0)
+  maxDiscount     Int?
+  usageLimit      Int?
+  usageCount      Int             @default(0)
+  perCustomerLimit Int?
+  startsAt        DateTime
+  endsAt          DateTime
+  isActive        Boolean         @default(true)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  orders          Order[]
+  @@index([isActive, startsAt, endsAt])
+  @@map("promotions")
+}
+
+model Review {
+  id          String   @id @default(uuid())
+  orderId     String   @unique
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  customerId  String
+  customer    User     @relation("ReviewCustomer", fields: [customerId], references: [id])
+  vendorId    String
+  vendor      Vendor   @relation("ReviewVendor", fields: [vendorId], references: [id])
+  riderId     String?
+  rider       Rider?   @relation("ReviewRider", fields: [riderId], references: [id])
+  productId   String?
+  product     Product? @relation(fields: [productId], references: [id])
+  vendorRating Int?
+  riderRating  Int?
+  productRating Int?
+  comment     String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([vendorId])
+  @@index([riderId])
+  @@index([productId])
+  @@map("reviews")
+}
+
+enum SupportTicketStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+model SupportTicket {
+  id          String              @id @default(uuid())
+  customerId  String
+  customer    User                @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  orderId     String?
+  order       Order?              @relation(fields: [orderId], references: [id])
+  subject     String
+  description String
+  status      SupportTicketStatus @default(OPEN)
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  messages SupportMessage[]
+  @@index([customerId, status])
+  @@index([orderId])
+  @@map("support_tickets")
+}
+
+model SupportMessage {
+  id        String        @id @default(uuid())
+  ticketId  String
+  ticket    SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  senderId  String
+  message   String
+  isAdmin   Boolean       @default(false)
+  createdAt DateTime      @default(now())
+
+  @@index([ticketId, createdAt])
+  @@map("support_messages")
+}
+
+model ContentBlock {
+  id          String   @id @default(uuid())
+  key         String   @unique
+  title       String?
+  body        Json
+  isPublished Boolean  @default(false)
+  sortOrder   Int      @default(0)
+  updatedAt   DateTime @updatedAt
+  createdAt   DateTime @default(now())
+
+  @@index([isPublished, sortOrder])
+  @@map("content_blocks")
+}
+
+
+// Phase 13 hardening: media is stored in S3-compatible object storage; the DB stores metadata only.
+enum MediaAssetStatus {
+  PENDING
+  UPLOADED
+  REJECTED
+}
+
+model MediaAsset {
+  id          String           @id @default(uuid())
+  ownerId     String
+  key         String           @unique
+  bucket      String
+  mimeType    String
+  sizeBytes   Int
+  status      MediaAssetStatus @default(PENDING)
+  publicUrl   String?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  @@index([ownerId, status])
+  @@map("media_assets")
+}
+
+model Advertisement {
+  id            String   @id @default(uuid())
+  title         String
+  imageUrl      String
+  targetUrl     String?
+  placement     String
+  startsAt      DateTime
+  endsAt        DateTime
+  displayOrder  Int      @default(0)
+  isActive      Boolean @default(true)
+  impressions   Int     @default(0)
+  clicks        Int     @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([placement, isActive, startsAt, endsAt])
+  @@map("advertisements")
+}
+
+model Banner {
+  id           String   @id @default(uuid())
+  title        String
+  imageUrl     String
+  mobileImageUrl String?
+  targetUrl    String?
+  placement    String
+  displayOrder Int      @default(0)
+  isActive     Boolean  @default(true)
+  startsAt     DateTime
+  endsAt       DateTime
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([placement, isActive, startsAt, endsAt])
+  @@map("banners")
+}

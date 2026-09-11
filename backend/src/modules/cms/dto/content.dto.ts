@@ -1,0 +1,1 @@
+import { IsBoolean, IsInt, IsObject, IsOptional, IsString } from 'class-validator'; export class ContentDto { @IsString() key:string; @IsOptional() @IsString() title?:string; @IsObject() body:Record<string,any>; @IsOptional() @IsBoolean() isPublished?:boolean; @IsOptional() @IsInt() sortOrder?:number; }

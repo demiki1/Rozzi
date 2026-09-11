@@ -1,0 +1,100 @@
+# ROZZI single-server production starter.
+# Use a managed PostgreSQL database and a platform/load-balancer that provides HTTPS.
+# Copy to docker-compose.production.yml and supply ALL required variables through
+# your secret manager or deployment environment. Do not commit real secrets.
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?set JWT_ACCESS_SECRET}
+      JWT_ACCESS_EXPIRES_IN: ${JWT_ACCESS_EXPIRES_IN:-15m}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?set JWT_REFRESH_SECRET}
+      JWT_REFRESH_EXPIRES_IN: ${JWT_REFRESH_EXPIRES_IN:-30d}
+      CORS_ORIGIN: ${CORS_ORIGIN:?set CORS_ORIGIN}
+      PAYMENT_PROVIDER: ${PAYMENT_PROVIDER:-PAYSTACK}
+      PAYSTACK_SECRET_KEY: ${PAYSTACK_SECRET_KEY:-}
+      PAYSTACK_PUBLIC_KEY: ${PAYSTACK_PUBLIC_KEY:-}
+      FLUTTERWAVE_SECRET_KEY: ${FLUTTERWAVE_SECRET_KEY:-}
+      FLUTTERWAVE_WEBHOOK_SECRET_HASH: ${FLUTTERWAVE_WEBHOOK_SECRET_HASH:-}
+      CUSTOMER_APP_URL: ${CUSTOMER_APP_URL:?set CUSTOMER_APP_URL}
+      REQUIRE_ACCOUNT_VERIFICATION: ${REQUIRE_ACCOUNT_VERIFICATION:-true}
+      NOTIFICATION_EMAIL_PROVIDER: ${NOTIFICATION_EMAIL_PROVIDER:-resend}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+      NOTIFICATION_SMS_PROVIDER: ${NOTIFICATION_SMS_PROVIDER:-termii}
+      TERMII_API_KEY: ${TERMII_API_KEY:-}
+      TERMII_SENDER_ID: ${TERMII_SENDER_ID:-Rozzi}
+      S3_ENDPOINT: ${S3_ENDPOINT:-}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-rozzi}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-}
+      S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-false}
+      S3_PUBLIC_BASE_URL: ${S3_PUBLIC_BASE_URL:-}
+      SKIP_MIGRATIONS: ${SKIP_MIGRATIONS:-true}
+    ports:
+      - "4000:4000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  admin:
+    build:
+      context: ./apps/admin
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${ADMIN_API_URL:?set ADMIN_API_URL}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "3001:3001"
+
+  customer:
+    build:
+      context: ./apps/customer
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${CUSTOMER_API_URL:?set CUSTOMER_API_URL}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "3002:3002"
+
+  vendor:
+    build:
+      context: ./apps/vendor
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${VENDOR_API_URL:?set VENDOR_API_URL}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "3003:3003"
+
+  rider:
+    build:
+      context: ./apps/rider
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${RIDER_API_URL:?set RIDER_API_URL}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "3004:3004"

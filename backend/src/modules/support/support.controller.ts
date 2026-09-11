@@ -1,0 +1,15 @@
+import {Body,Controller,Get,Param,Patch,Post,UseGuards} from '@nestjs/common';import{SupportService}from'./support.service';import{CreateTicketDto,MessageDto,StatusDto,CreateRefundRequestDto}from'./dto/support.dto';import{CurrentUser}from'../../common/decorators/current-user.decorator';import{Roles}from'../../common/decorators/roles.decorator';import{RolesGuard}from'../../common/guards/roles.guard';import{AdminRoles}from'../../common/decorators/admin-roles.decorator';import{AdminRolesGuard}from'../../common/guards/admin-roles.guard';import{UserRole,AdminRole}from'@prisma/client';
+@Controller('api')export class SupportController{constructor(private s:SupportService){}
+@UseGuards(RolesGuard)@Roles(UserRole.CUSTOMER)@Get('support/refunds')refunds(@CurrentUser()u:{userId:string}){return this.s.refundRequests(u.userId)}
+@UseGuards(RolesGuard)@Roles(UserRole.CUSTOMER)@Post('support/refunds')refund(@CurrentUser()u:{userId:string},@Body()d:CreateRefundRequestDto){return this.s.createRefundRequest(u.userId,d)}
+@UseGuards(RolesGuard)@Roles(UserRole.CUSTOMER)@Post('support/tickets')createCustomer(@CurrentUser()u:{userId:string},@Body()d:CreateTicketDto){return this.s.createCustomer(u.userId,d)}
+@UseGuards(RolesGuard)@Roles(UserRole.CUSTOMER)@Get('support/tickets')mineCustomer(@CurrentUser()u:{userId:string}){return this.s.mineCustomer(u.userId)}
+@UseGuards(RolesGuard)@Roles(UserRole.CUSTOMER)@Get('support/tickets/:id')getCustomer(@CurrentUser()u:{userId:string},@Param('id')id:string){return this.s.getCustomer(u.userId,id)}
+@UseGuards(RolesGuard)@Roles(UserRole.CUSTOMER)@Post('support/tickets/:id/messages')msgCustomer(@CurrentUser()u:{userId:string},@Param('id')id:string,@Body()d:MessageDto){return this.s.messageOwner(u.userId,'customer',id,d)}
+@UseGuards(RolesGuard)@Roles(UserRole.VENDOR)@Post('vendor/support/tickets')createVendor(@CurrentUser()u:{userId:string},@Body()d:CreateTicketDto){return this.s.createVendor(u.userId,d)}
+@UseGuards(RolesGuard)@Roles(UserRole.VENDOR)@Get('vendor/support/tickets')mineVendor(@CurrentUser()u:{userId:string}){return this.s.mineVendor(u.userId)}
+@UseGuards(RolesGuard)@Roles(UserRole.VENDOR)@Get('vendor/support/tickets/:id')getVendor(@CurrentUser()u:{userId:string},@Param('id')id:string){return this.s.getVendor(u.userId,id)}
+@UseGuards(RolesGuard)@Roles(UserRole.VENDOR)@Post('vendor/support/tickets/:id/messages')msgVendor(@CurrentUser()u:{userId:string},@Param('id')id:string,@Body()d:MessageDto){return this.s.messageOwner(u.userId,'vendor',id,d)}
+@UseGuards(RolesGuard,AdminRolesGuard)@Roles(UserRole.ADMIN)@AdminRoles(AdminRole.SUPPORT_ADMIN)@Get('admin/support/tickets')admin(){return this.s.listAdmin()}
+@UseGuards(RolesGuard,AdminRolesGuard)@Roles(UserRole.ADMIN)@AdminRoles(AdminRole.SUPPORT_ADMIN)@Post('admin/support/tickets/:id/messages')adminMsg(@CurrentUser()u:{userId:string},@Param('id')id:string,@Body()d:MessageDto){return this.s.messageAdmin(u.userId,id,d)}
+@UseGuards(RolesGuard,AdminRolesGuard)@Roles(UserRole.ADMIN)@AdminRoles(AdminRole.SUPPORT_ADMIN)@Patch('admin/support/tickets/:id/status')status(@Param('id')id:string,@Body()d:StatusDto){return this.s.status(id,d)}}

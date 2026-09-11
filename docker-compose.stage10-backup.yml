@@ -1,0 +1,124 @@
+version: "3.9"
+
+# HONEST SCOPE NOTE: this compose file is for local development and small
+# single-server staging — NOT a production deployment topology. Real
+# production should use: a managed Postgres (RDS/Cloud SQL/etc, not a
+# container with a local volume), secrets injected by your platform's
+# secret manager (not plaintext environment: blocks in a committed file —
+# note this file references a `.env` at the repo root for the values below
+# rather than hard-coding them, but that .env still shouldn't be committed
+# with real secrets in it), and migrations run as a separate release step
+# rather than the backend's own entrypoint (see backend/docker-entrypoint.sh
+# and set SKIP_MIGRATIONS=true here if you've already applied migrations
+# that way). No orchestration (replica counts, health-check-driven restarts,
+# rolling deploys) is set up here — see PRODUCTION_CHECKLIST.md.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: marketplace
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # NOTE: deliberately NOT "production" — this compose file is
+      # documented above as dev/staging convenience, and "development"
+      # here is what allows `prisma db seed` to run (Phase 11 added a
+      # hard refusal for the seed script under NODE_ENV=production) and
+      # keeps the dev-only payment-confirmation stub reachable for demoing
+      # the order lifecycle without live Paystack keys. A REAL production
+      # deployment must override this to "production" — which will also
+      # disable that payment stub, as intended.
+      NODE_ENV: development
+      PORT: 4000
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/marketplace?schema=public
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?set JWT_ACCESS_SECRET in .env}
+      JWT_ACCESS_EXPIRES_IN: 15m
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?set JWT_REFRESH_SECRET in .env}
+      JWT_REFRESH_EXPIRES_IN: 30d
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3001,http://localhost:3002,http://localhost:3003,http://localhost:3004}
+      PAYMENT_PROVIDER: paystack
+      PAYSTACK_SECRET_KEY: ${PAYSTACK_SECRET_KEY:-}
+      PAYSTACK_PUBLIC_KEY: ${PAYSTACK_PUBLIC_KEY:-}
+    ports:
+      - "4000:4000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch(\"http://127.0.0.1:4000/health\").then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  admin:
+    build:
+      context: ./apps/admin
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${ADMIN_API_URL:-http://localhost:4000}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "3001:3001"
+
+  customer:
+    build:
+      context: ./apps/customer
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${CUSTOMER_API_URL:-http://localhost:4000}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "3002:3002"
+
+  vendor:
+    build:
+      context: ./apps/vendor
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${VENDOR_API_URL:-http://localhost:4000}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "3003:3003"
+
+  rider:
+    build:
+      context: ./apps/rider
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${RIDER_API_URL:-http://localhost:4000}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "3004:3004"
+
+volumes:
+  postgres_data:
