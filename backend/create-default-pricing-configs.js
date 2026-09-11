@@ -2,6 +2,8 @@ const { PrismaClient } = require('@prisma/client');
 
 const prisma = new PrismaClient();
 
+// Batch 2 validation trigger; removed by the hardening workflow after validation.
+
 async function main() {
   const serviceAreas = await prisma.serviceArea.findMany({
     select: {
