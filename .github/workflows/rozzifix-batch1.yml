@@ -4,6 +4,10 @@ on:
   push:
     branches: [codex/rozzifix-batch1]
 
+concurrency:
+  group: rozzifix-batch1
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -11,67 +15,74 @@ jobs:
   harden:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
+          cache-dependency-path: backend/package-lock.json
+
       - name: Apply payment integrity fixes
         shell: bash
         run: |
           python3 <<'PY'
           from pathlib import Path
-          import re
 
-          def read(p): return Path(p).read_text(encoding='utf-8-sig')
-          def write(p, s): Path(p).write_text(s, encoding='utf-8')
+          def read(p):
+              return Path(p).read_text(encoding='utf-8-sig')
+
+          def write(p, s):
+              Path(p).write_text(s, encoding='utf-8')
+
           def replace_once(s, old, new, p):
-              n=s.count(old)
+              n = s.count(old)
+              if n == 0:
+                  return s, False
               if n != 1:
-                  raise SystemExit(f'{p}: expected 1 exact match, found {n}')
-              return s.replace(old,new,1)
-          def sub_once(s, pat, repl, p):
-              s2,n=re.subn(pat,repl,s,count=1,flags=re.S)
-              if n != 1:
-                  raise SystemExit(f'{p}: regex did not match exactly once')
-              return s2
+                  raise SystemExit(f'{p}: expected at most 1 exact match, found {n}')
+              return s.replace(old, new, 1), True
 
           # Wallet: conditional update prevents concurrent requests from spending
           # the same observed balance. No schema or migration change is needed.
-          p='backend/src/modules/payments/payments.service.ts'; s=read(p)
-          old='''      if (wallet.balance < order.totalAmount) {\n        throw new ConflictException('Insufficient wallet balance.');\n      }\n\n      const reference = `RZW-ORD-${order.orderNumber}-${uuidv4()\n        .slice(0, 8)\n        .toUpperCase()}`;\n\n      const before = wallet.balance;\n      const after = before - order.totalAmount;\n\n      await tx.wallet.update({\n        where: { id: wallet.id },\n        data: {\n          balance: after,\n        },\n      });\n'''
-          new='''      // Atomically reserve the wallet amount. Two concurrent payments cannot\n      // both pass a stale balance check and spend the same funds.\n      const debited = await tx.wallet.updateMany({\n        where: {\n          id: wallet.id,\n          isActive: true,\n          balance: { gte: order.totalAmount },\n        },\n        data: {\n          balance: { decrement: order.totalAmount },\n        },\n      });\n\n      if (debited.count !== 1) {\n        throw new ConflictException('Insufficient wallet balance.');\n      }\n\n      const updatedWallet = await tx.wallet.findUniqueOrThrow({\n        where: { id: wallet.id },\n        select: { balance: true },\n      });\n\n      const reference = `RZW-ORD-${order.orderNumber}-${uuidv4()\n        .slice(0, 8)\n        .toUpperCase()}`;\n\n      const after = updatedWallet.balance;\n      const before = after + order.totalAmount;\n'''
-          s=replace_once(s,old,new,p)
-          write(p,s)
+          p = 'backend/src/modules/payments/payments.service.ts'
+          s = read(p)
+          old = '''      if (wallet.balance < order.totalAmount) {\n        throw new ConflictException('Insufficient wallet balance.');\n      }\n\n      const reference = `RZW-ORD-${order.orderNumber}-${uuidv4()}\n        .slice(0, 8)\n        .toUpperCase()}`;\n\n      const before = wallet.balance;\n      const after = before - order.totalAmount;\n\n      await tx.wallet.update({\n        where: { id: wallet.id },\n        data: {\n          balance: after,\n        },\n      });\n'''
+          new = '''      // Atomically reserve the wallet amount. Two concurrent payments cannot\n      // both pass a stale balance check and spend the same funds.\n      const debited = await tx.wallet.updateMany({\n        where: {\n          id: wallet.id,\n          isActive: true,\n          balance: { gte: order.totalAmount },\n        },\n        data: {\n          balance: { decrement: order.totalAmount },\n        },\n      });\n\n      if (debited.count !== 1) {\n        throw new ConflictException('Insufficient wallet balance.');\n      }\n\n      const updatedWallet = await tx.wallet.findUniqueOrThrow({\n        where: { id: wallet.id },\n        select: { balance: true },\n      });\n\n      const reference = `RZW-ORD-${order.orderNumber}-${uuidv4()}\n        .slice(0, 8)\n        .toUpperCase()}`;\n\n      const after = updatedWallet.balance;\n      const before = after + order.totalAmount;\n'''
+          s, changed = replace_once(s, old, new, p)
+          write(p, s)
 
           # Flutterwave: provider amount must match the order amount exactly.
-          p='backend/src/modules/payments/payments.service.ts'; s=read(p)
-          s=replace_once(s,'verification.amountKobo < payment.amount','verification.amountKobo !== payment.amount',p)
-          s=replace_once(s,"Flutterwave payment amount is below the expected order total.","Flutterwave payment amount does not match the expected order total.",p)
-          write(p,s)
+          p = 'backend/src/modules/payments/payments.service.ts'
+          s = read(p)
+          s, c1 = replace_once(s, 'verification.amountKobo < payment.amount', 'verification.amountKobo !== payment.amount', p)
+          s, c2 = replace_once(s, "Flutterwave payment amount is below the expected order total.", "Flutterwave payment amount does not match the expected order total.", p)
+          write(p, s)
 
           # Payment verification: authenticate the redirect verification route and
           # verify that the payment belongs to the requesting customer.
-          p='backend/src/modules/payments/payments.controller.ts'; s=read(p)
-          old='''  @Get('verify/:reference')\n  verify(\n    @Param('reference') reference: string,\n    @Query('transaction_id') transactionId?: string,\n  ) {\n    return this.paymentsService.verifyByReference(\n      reference,\n      transactionId,\n    );\n  }'''
-          new='''  @UseGuards(RolesGuard)\n  @Roles(UserRole.CUSTOMER)\n  @Get('verify/:reference')\n  verify(\n    @CurrentUser() user: { userId: string },\n    @Param('reference') reference: string,\n    @Query('transaction_id') transactionId?: string,\n  ) {\n    return this.paymentsService.verifyByReference(\n      reference,\n      transactionId,\n      user.userId,\n    );\n  }'''
-          s=replace_once(s,old,new,p)
-          write(p,s)
+          p = 'backend/src/modules/payments/payments.controller.ts'
+          s = read(p)
+          old = '''  @Get('verify/:reference')\n  verify(\n    @Param('reference') reference: string,\n    @Query('transaction_id') transactionId?: string,\n  ) {\n    return this.paymentsService.verifyByReference(\n      reference,\n      transactionId,\n    );\n  }'''
+          new = '''  @UseGuards(RolesGuard)\n  @Roles(UserRole.CUSTOMER)\n  @Get('verify/:reference')\n  verify(\n    @CurrentUser() user: { userId: string },\n    @Param('reference') reference: string,\n    @Query('transaction_id') transactionId?: string,\n  ) {\n    return this.paymentsService.verifyByReference(\n      reference,\n      transactionId,\n      user.userId,\n    );\n  }'''
+          s, changed = replace_once(s, old, new, p)
+          write(p, s)
 
-          p='backend/src/modules/payments/payments.service.ts'; s=read(p)
-          old='''  async verifyByReference(\n    reference: string,\n    providerTransactionId?: string,\n  ) {'''
-          new='''  async verifyByReference(\n    reference: string,\n    providerTransactionId?: string,\n    customerId?: string,\n  ) {\n    const payment = await this.prisma.payment.findUnique({\n      where: { reference },\n      select: {\n        order: { select: { customerId: true } },\n      },\n    });\n\n    if (!payment || (customerId && payment.order.customerId !== customerId)) {\n      throw new NotFoundException('Payment not found.');\n    }'''
-          s=replace_once(s,old,new,p)
-          write(p,s)
+          p = 'backend/src/modules/payments/payments.service.ts'
+          s = read(p)
+          old = '''  async verifyByReference(\n    reference: string,\n    providerTransactionId?: string,\n  ) {'''
+          new = '''  async verifyByReference(\n    reference: string,\n    providerTransactionId?: string,\n    customerId?: string,\n  ) {\n    const payment = await this.prisma.payment.findUnique({\n      where: { reference },\n      select: {\n        order: { select: { customerId: true } },\n      },\n    });\n\n    if (!payment || (customerId && payment.order.customerId !== customerId)) {\n      throw new NotFoundException('Payment not found.');\n    }'''
+          s, changed = replace_once(s, old, new, p)
+          write(p, s)
 
-          print('Batch 1 source changes applied.')
+          print('Batch 1 source changes are present.')
           PY
 
       - name: Validate backend
+        working-directory: backend
         run: |
-          npm install --no-audit --no-fund
-          cd backend
+          npm ci --no-audit --no-fund
           npx prisma generate
           npm run build
           npm test -- --runInBand
@@ -82,5 +93,9 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git diff --check
           git add backend/src/modules/payments/payments.service.ts backend/src/modules/payments/payments.controller.ts
-          git commit -m "fix: harden payment concurrency and verification"
-          git push
+          if git diff --cached --quiet; then
+            echo "No production changes to commit."
+          else
+            git commit -m "fix: harden payment concurrency and verification"
+            git push
+          fi
