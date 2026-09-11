@@ -1,5 +1,4 @@
 # Batch 2: financial funding and cancellation UX hardening.
-# Temporary diagnostic: checkout response is printed only during validation.
 name: ROZZI batch 2 hardening
 
 on:
@@ -84,10 +83,11 @@ jobs:
               replacement='''    serviceAreaId = serviceArea.id;\n    await prisma.pricingConfig.create({ data: { serviceAreaId, serviceFeeRatePercent: 0, serviceFeeCapAmount: 100_000, baseDeliveryFee: 50_000, perKmDeliveryFee: 0, deliveryRadiusKm: 10, riderPayoutRatePercent: 92, isActive: true } });\n    const zone = await prisma.deliveryZone.create({'''
               if anchor not in s: raise SystemExit('e2e pricing fixture anchor not found')
               s=s.replace(anchor,replacement,1)
-          if "latitude: 6.51, longitude: 7.51" not in s:
-              s=s.replace(".send({ label: 'Home', addressText: '1 Test Street' });",".send({ label: 'Home', addressText: '1 Test Street', latitude: 6.51, longitude: 7.51 });",1)
-          if "console.log('E2E checkout response'" not in s:
-              s=s.replace(".send({ serviceAreaId, deliveryType: 'DELIVERY', addressId });",".send({ serviceAreaId, deliveryType: 'DELIVERY', addressId });\n    console.log('E2E checkout response', res.status, res.body);",1)
+          address_line=".send({ label: 'Home', addressText: '1 Test Street' });"
+          if address_line in s:
+              s=s.replace(address_line,".send({ label: 'Home', addressText: '1 Test Street', latitude: 6.51, longitude: 7.51 });",1)
+          # Do not retain the temporary diagnostic in the repository.
+          s=s.replace("\n    console.log('E2E checkout response', res.status, res.body);",'',1)
           write(p,s)
           PY
 
