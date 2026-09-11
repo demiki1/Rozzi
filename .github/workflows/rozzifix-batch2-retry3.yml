@@ -1,0 +1,111 @@
+name: ROZZI batch 2 retry 3
+
+on:
+  push:
+    branches: [codex/rozzifix-batch1]
+
+concurrency:
+  group: rozzifix-batch2-retry3
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  harden:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Apply batch 2 changes
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          def read(p): return Path(p).read_text(encoding='utf-8-sig')
+          def write(p, s): Path(p).write_text(s, encoding='utf-8')
+          def ensure(s, old, new, p):
+              if new in s: return s
+              if old not in s: raise SystemExit(f'{p}: pattern not found')
+              return s.replace(old, new, 1)
+
+          # Pricing config + historical snapshot.
+          p='backend/prisma/schema.prisma'; s=read(p)
+          s=ensure(s,'  deliveryRadiusKm Decimal @db.Decimal(6, 2)\n\n  // Surge pricing.','  deliveryRadiusKm Decimal @db.Decimal(6, 2)\n\n  riderPayoutRatePercent Decimal @default(92) @db.Decimal(5, 2)\n\n  // Surge pricing.',p)
+          s=ensure(s,'  commissionRateSnapshot Decimal        @db.Decimal(5, 2)\n  pricingConfigId','  commissionRateSnapshot Decimal        @db.Decimal(5, 2)\n  riderPayoutRateSnapshot Decimal?       @db.Decimal(5, 2)\n  pricingConfigId',p)
+          write(p,s)
+
+          p='backend/src/modules/pricing/dto/update-pricing-config.dto.ts'; s=read(p)
+          s=ensure(s,'  deliveryRadiusKm?: number;\n\n  @IsOptional()\n  @IsBoolean()\n  surgeEnabled?: boolean;','  deliveryRadiusKm?: number;\n\n  @IsOptional()\n  @IsNumber({ maxDecimalPlaces: 2 })\n  @Min(0)\n  @Max(100)\n  riderPayoutRatePercent?: number;\n\n  @IsOptional()\n  @IsBoolean()\n  surgeEnabled?: boolean;',p); write(p,s)
+
+          p='backend/create-default-pricing-configs.js'; s=read(p)
+          s=ensure(s,'        deliveryRadiusKm: 8,\n\n        surgeEnabled:','        deliveryRadiusKm: 8,\n        riderPayoutRatePercent: 92,\n\n        surgeEnabled:',p); write(p,s)
+
+          # Ledger uses the service-area rate and snapshots it. The repository
+          # currently contains mojibake in old comments, so match the rider
+          # block structurally instead of depending on comment encoding.
+          p='backend/src/modules/finance/ledger.service.ts'; s=read(p)
+          marker='''        items: {\n          select: {\n            subtotalAmount: true,\n            commissionRateSnapshot: true,\n            commissionAmountSnapshot: true,\n          },\n        },\n      },\n    });'''
+          replacement='''        items: {\n          select: {\n            subtotalAmount: true,\n            commissionRateSnapshot: true,\n            commissionAmountSnapshot: true,\n          },\n        },\n        pricingConfig: {\n          select: { riderPayoutRatePercent: true },\n        },\n      },\n    });'''
+          s=s.replace(marker,replacement)
+          rider_pattern=r'''    // Rider payout:.*?    }\n\n    // Service fee'''
+          rider_new='''    const riderPayoutRate = Math.min(100, Math.max(0, Number(order.riderPayoutRateSnapshot ?? order.pricingConfig?.riderPayoutRatePercent ?? 92)));\n\n    if (order.riderPayoutRateSnapshot == null) {\n      await this.prisma.order.update({ where: { id: order.id }, data: { riderPayoutRateSnapshot: riderPayoutRate } });\n    }\n\n    if (order.delivery?.riderId && order.deliveryFeeAmount > 0) {\n      const riderEarning = Math.round(order.deliveryFeeAmount * riderPayoutRate / 100);\n      const rozziDeliveryShare = order.deliveryFeeAmount - riderEarning;\n      await this.record({\n        type: LedgerEntryType.RIDER_EARNING,\n        accountType: LedgerAccountType.RIDER,\n        accountId: order.delivery.riderId,\n        orderId: order.id,\n        amount: riderEarning,\n        description: `Delivery payout (${riderPayoutRate}% rider) for order ${order.orderNumber}`,\n        idempotencyKey: `order:${order.id}:rider-earning`,\n      });\n      if (rozziDeliveryShare > 0) {\n        await this.record({\n          type: LedgerEntryType.PLATFORM_COMMISSION,\n          accountType: LedgerAccountType.PLATFORM,\n          orderId: order.id,\n          amount: rozziDeliveryShare,\n          description: `Delivery revenue (${100 - riderPayoutRate}% ROZZI) for order ${order.orderNumber}`,\n          idempotencyKey: `order:${order.id}:delivery-platform-share`,\n        });\n      }\n    }\n\n    // Service fee'''
+          s,n=re.subn(rider_pattern,rider_new,s,count=1,flags=re.S)
+          if n!=1: raise SystemExit(f'{p}: rider block regex did not match exactly once')
+          rider_old="    const riderReversal = order.delivery?.riderId ? Math.min(order.deliveryFeeAmount, Math.max(0, refundAmount - vendorReversal - commissionReversal)) : 0;"
+          rider_new2="    const riderRate = Math.min(100, Math.max(0, Number(order.riderPayoutRateSnapshot ?? order.pricingConfig?.riderPayoutRatePercent ?? 92)));\n    const riderEarned = Math.round(order.deliveryFeeAmount * riderRate / 100);\n    const riderReversal = order.delivery?.riderId ? Math.min(riderEarned, Math.max(0, refundAmount - vendorReversal - commissionReversal)) : 0;"
+          s=ensure(s,rider_old,rider_new2,p); write(p,s)
+
+          # Unit fixture.
+          p='backend/test/unit/ledger-commission.spec.ts'; s=read(p)
+          if 'pricingConfig:' not in s:
+              s=s.replace('      ledgerEntry: {\n','      pricingConfig: { findFirst: jest.fn(async () => ({ riderPayoutRatePercent: 92 })) },\n      ledgerEntry: {\n',1)
+          if 'update: jest.fn(async ({ data }: any)' not in s:
+              s=s.replace('      order: {\n        findUnique: jest.fn(async () => order),\n      },','      order: {\n        findUnique: jest.fn(async () => order),\n        update: jest.fn(async ({ data }: any) => ({ ...order, ...data })),\n      },',1)
+          if 'Delivery revenue (8% ROZZI)' not in s:
+              s=s.replace('    expect(riderEntry.amount).toBe(order.deliveryFeeAmount);','    expect(riderEntry.amount).toBe(73_600);\n    expect(created.find((e) => e.description?.includes(\'Delivery revenue (8% ROZZI)\')).amount).toBe(6_400);',1)
+          write(p,s)
+
+          # Required migration; never applied to a DB in this workflow.
+          m=Path('backend/prisma/migrations/202609120010_rider_payout_split/migration.sql'); m.parent.mkdir(parents=True,exist_ok=True)
+          if not m.exists(): m.write_text('ALTER TABLE "pricing_configs" ADD COLUMN "riderPayoutRatePercent" DECIMAL(5,2) NOT NULL DEFAULT 92.00;\nALTER TABLE "orders" ADD COLUMN "riderPayoutRateSnapshot" DECIMAL(5,2);\n',encoding='utf-8')
+
+          # Existing admin Locations screen.
+          p='apps/admin/src/app/locations/page.tsx'; s=read(p)
+          if 'riderRateByArea' not in s:
+              s=s.replace("  const [error, setError] = useState<string | null>(null);","  const [error, setError] = useState<string | null>(null);\n  const [riderRateByArea, setRiderRateByArea] = useState<Record<string, string>>({});",1)
+              s=s.replace("    api\n      .get<ServiceAreaSummary[]>('/api/admin/service-areas')\n      .then(setServiceAreas)\n      .catch((e) => setError(e.message));","    api\n      .get<ServiceAreaSummary[]>('/api/admin/service-areas')\n      .then(async (areas) => {\n        setServiceAreas(areas);\n        const configs = await Promise.all(areas.map(async (area) => [area.id, await api.get<any>(`/api/admin/pricing/service-areas/${area.id}`)] as const));\n        setRiderRateByArea(Object.fromEntries(configs.map(([id, config]) => [id, String(config.riderPayoutRatePercent ?? 92)])));\n      })\n      .catch((e) => setError(e.message));",1)
+              helper="""\n  async function saveRiderRate(serviceAreaId: string) {\n    const value = Number(riderRateByArea[serviceAreaId]);\n    if (!Number.isFinite(value) || value < 0 || value > 100) { setError('Rider payout rate must be between 0% and 100%.'); return; }\n    try { await api.patch(`/api/admin/pricing/service-areas/${serviceAreaId}`, { riderPayoutRatePercent: value }); setError(null); load(); }\n    catch (err: any) { setError(err.message); }\n  }\n"""
+              s=s.replace('  async function setStatus(serviceAreaId: string, status: string) {',helper+'\n  async function setStatus(serviceAreaId: string, status: string) {',1)
+              anchor='''                <div className="mt-2 text-xs text-gray-500">\n                  Zones: {area.deliveryZones.map((z) => z.name).join(', ') || 'none yet'}\n                </div>'''
+              ui=anchor+'''\n\n                <div className="mt-2 flex items-center gap-2">\n                  <label className="text-xs text-gray-500">Rider payout %</label>\n                  <input type="number" min="0" max="100" step="0.01" value={riderRateByArea[area.id] ?? '92'} onChange={(e) => setRiderRateByArea((prev) => ({ ...prev, [area.id]: e.target.value }))} className="w-20 rounded-md border border-gray-300 px-2 py-1 text-xs" />\n                  <button onClick={() => saveRiderRate(area.id)} className="rounded-md bg-gray-100 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-200">Save</button>\n                </div>'''
+              s=ensure(s,anchor,ui,p)
+          write(p,s)
+          print('Batch 2 retry 3 patch complete')
+          PY
+
+      - name: Validate backend and admin
+        run: |
+          cd backend
+          npm ci --no-audit --no-fund
+          npx prisma generate
+          npm run build
+          npm test -- --runInBand
+          cd ../apps/admin
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Commit validated batch 2
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git diff --check
+          git add backend/prisma/schema.prisma backend/prisma/migrations/202609120010_rider_payout_split/migration.sql backend/src/modules/pricing/dto/update-pricing-config.dto.ts backend/create-default-pricing-configs.js backend/src/modules/finance/ledger.service.ts backend/test/unit/ledger-commission.spec.ts apps/admin/src/app/locations/page.tsx
+          git diff --cached --quiet || (git commit -m "fix: make rider settlement split configurable" && git push)
