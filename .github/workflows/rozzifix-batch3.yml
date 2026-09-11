@@ -54,10 +54,6 @@ jobs:
               test='''\n  it('reverses ROZZI-funded promotion expense on refund', async () => {\n    const order = { id:'order-refund-promo', orderNumber:'RZW-REFUND-PROMO', vendorId:'vendor-1', subtotalAmount:900000, discountAmount:100000, totalAmount:915000, deliveryFeeAmount:0, serviceFeeAmount:15000, riderPayoutRateSnapshot:92, promotionId:'promo-3', promotion:{vendorId:null}, items:[{subtotalAmount:1000000,commissionRateSnapshot:10,commissionAmountSnapshot:100000}], delivery:null };\n    const { prisma, created }=buildPrismaMock(order); const service=new LedgerService(prisma as any,auditLogMock);\n    await service.onRefundProcessed({ orderId: order.id, amountKobo: 915000, refundId: 'refund-promo-1', paymentId: 'payment-promo-1' });\n    expect(created.find(e=>e.type===LedgerEntryType.PROMOTION && e.amount > 0).amount).toBe(100000);\n  });\n'''
               s=s.replace('\n});\n',test+'\n});\n',1)
           write(p,s)
-          p='backend/create-default-pricing-configs.js'; s=read(p)
-          s=s.replace('// Batch 2 validation trigger; removed by the hardening workflow after validation.\n','')
-          s=s.replace('// Temporary validation trigger; batch 3 removes this comment after validation.\n','')
-          write(p,s)
           PY
       - name: Validate full repository
         run: |
@@ -77,5 +73,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git diff --check
-          git add backend/src/modules/finance/ledger.service.ts backend/test/unit/ledger-commission.spec.ts backend/create-default-pricing-configs.js .github/workflows/rozzifix-batch3.yml
+          git add backend/src/modules/finance/ledger.service.ts backend/test/unit/ledger-commission.spec.ts .github/workflows/rozzifix-batch3.yml
           if git diff --cached --quiet; then echo 'No batch 3 changes.'; else git commit -m 'fix: reverse platform promotion expense on refunds' && git pull --rebase origin codex/rozzifix-batch1 && git push; fi
