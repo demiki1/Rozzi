@@ -97,6 +97,7 @@ export class LedgerService {
           },
         },
         pricingConfig: { select: { riderPayoutRatePercent: true } },
+        promotion: { select: { vendorId: true } },
       },
     });
     if (!order) {
@@ -108,18 +109,13 @@ export class LedgerService {
     // created at checkout. This preserves the exact vendor/category/global
     // rate that applied to each item and keeps delivery/service fees outside
     // the vendor commission base.
-    const commissionAmount = order.items.reduce(
-      (sum, item) => sum + item.commissionAmountSnapshot,
-      0,
-    );
-    const commissionableMerchandise = order.items.reduce(
-      (sum, item) => sum + item.subtotalAmount,
-      0,
-    );
-    const vendorEarning = Math.max(
-      0,
-      commissionableMerchandise - commissionAmount,
-    );
+    const commissionableMerchandise = order.items.reduce((sum, item) => sum + item.subtotalAmount, 0);
+    const promotionDiscount = Math.min(Math.max(0, order.discountAmount), commissionableMerchandise);
+    const vendorFundedPromotion = Boolean(order.promotionId && order.promotion?.vendorId);
+    const netCommissionBase = vendorFundedPromotion ? Math.max(0, commissionableMerchandise - promotionDiscount) : commissionableMerchandise;
+    const grossCommission = order.items.reduce((sum, item) => sum + item.commissionAmountSnapshot, 0);
+    const commissionAmount = vendorFundedPromotion && commissionableMerchandise > 0 ? Math.min(grossCommission, Math.round(grossCommission * netCommissionBase / commissionableMerchandise)) : grossCommission;
+    const vendorEarning = Math.max(0, netCommissionBase - commissionAmount);
 
     await this.record({
       type: LedgerEntryType.VENDOR_EARNING,
@@ -139,6 +135,10 @@ export class LedgerService {
       description: `Commission (${order.commissionRateSnapshot}%) on order ${order.orderNumber}`,
       idempotencyKey: `order:${order.id}:platform-commission`,
     });
+
+    if (promotionDiscount > 0 && !vendorFundedPromotion) {
+      await this.record({ type: LedgerEntryType.PROMOTION, accountType: LedgerAccountType.PLATFORM, orderId: order.id, amount: -promotionDiscount, description: `ROZZI-funded promotion for order ${order.orderNumber}`, idempotencyKey: `order:${order.id}:promotion-expense` });
+    }
 
     const riderPayoutRate = Math.min(100, Math.max(0, Number(order.riderPayoutRateSnapshot ?? order.pricingConfig?.riderPayoutRatePercent ?? 92)));
 
@@ -201,21 +201,17 @@ export class LedgerService {
           },
         },
         pricingConfig: { select: { riderPayoutRatePercent: true } },
+        promotion: { select: { vendorId: true } },
       },
     });
     if (!order) return;
-    const commission = order.items.reduce(
-      (sum, item) => sum + item.commissionAmountSnapshot,
-      0,
-    );
-    const commissionableMerchandise = order.items.reduce(
-      (sum, item) => sum + item.subtotalAmount,
-      0,
-    );
-    const vendorEarning = Math.max(
-      0,
-      commissionableMerchandise - commission,
-    );
+    const commissionableMerchandise = order.items.reduce((sum, item) => sum + item.subtotalAmount, 0);
+    const promotionDiscount = Math.min(Math.max(0, order.discountAmount), commissionableMerchandise);
+    const vendorFundedPromotion = Boolean(order.promotionId && order.promotion?.vendorId);
+    const netCommissionBase = vendorFundedPromotion ? Math.max(0, commissionableMerchandise - promotionDiscount) : commissionableMerchandise;
+    const grossCommission = order.items.reduce((sum, item) => sum + item.commissionAmountSnapshot, 0);
+    const commission = vendorFundedPromotion && commissionableMerchandise > 0 ? Math.min(grossCommission, Math.round(grossCommission * netCommissionBase / commissionableMerchandise)) : grossCommission;
+    const vendorEarning = Math.max(0, netCommissionBase - commission);
     const base = Math.max(1, order.totalAmount);
     const vendorReversal = Math.min(vendorEarning, Math.round(refundAmount * vendorEarning /base));
     const commissionReversal = Math.min(commission + order.serviceFeeAmount, Math.max(0, refundAmount - vendorReversal));

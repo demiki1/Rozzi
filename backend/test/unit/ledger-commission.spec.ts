@@ -165,4 +165,21 @@ describe('LedgerService — order-delivered booking (§21)', () => {
 
     expect(created.length).toBe(0);
   });
+  it('charges a vendor-funded promotion against vendor economics and commission base', async () => {
+    const order = { id:'order-promo-vendor', orderNumber:'RZW-PROMO-1', vendorId:'vendor-1', subtotalAmount:900000, discountAmount:100000, totalAmount:915000, deliveryFeeAmount:0, serviceFeeAmount:15000, commissionRateSnapshot:10, promotionId:'promo-1', promotion:{vendorId:'vendor-1'}, items:[{subtotalAmount:1000000,commissionRateSnapshot:10,commissionAmountSnapshot:100000}], delivery:null };
+    const { prisma, created }=buildPrismaMock(order); const service=new LedgerService(prisma as any,auditLogMock);
+    await service.onOrderTransitioned({orderId:order.id,orderNumber:order.orderNumber,customerId:'customer-1',vendorId:order.vendorId,fromStatus:OrderStatus.PREPARING,toStatus:OrderStatus.DELIVERED,deliveryType:'PICKUP'});
+    expect(created.find(e=>e.type===LedgerEntryType.PLATFORM_COMMISSION&&e.description?.includes('Commission')).amount).toBe(90000);
+    expect(created.find(e=>e.type===LedgerEntryType.VENDOR_EARNING).amount).toBe(810000);
+    expect(created.find(e=>e.type===LedgerEntryType.PROMOTION)).toBeUndefined();
+  });
+
+  it('books a ROZZI-funded promotion as a platform promotion expense', async () => {
+    const order = { id:'order-promo-rozzi', orderNumber:'RZW-PROMO-2', vendorId:'vendor-1', subtotalAmount:900000, discountAmount:100000, totalAmount:915000, deliveryFeeAmount:0, serviceFeeAmount:15000, commissionRateSnapshot:10, promotionId:'promo-2', promotion:{vendorId:null}, items:[{subtotalAmount:1000000,commissionRateSnapshot:10,commissionAmountSnapshot:100000}], delivery:null };
+    const { prisma, created }=buildPrismaMock(order); const service=new LedgerService(prisma as any,auditLogMock);
+    await service.onOrderTransitioned({orderId:order.id,orderNumber:order.orderNumber,customerId:'customer-1',vendorId:order.vendorId,fromStatus:OrderStatus.PREPARING,toStatus:OrderStatus.DELIVERED,deliveryType:'PICKUP'});
+    expect(created.find(e=>e.type===LedgerEntryType.PROMOTION).amount).toBe(-100000);
+    expect(created.find(e=>e.type===LedgerEntryType.VENDOR_EARNING).amount).toBe(900000);
+  });
+
 });
