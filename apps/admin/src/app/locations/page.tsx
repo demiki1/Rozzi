@@ -16,6 +16,7 @@ export default function LocationsPage() {
   const [tree, setTree] = useState<LocationNode[]>([]);
   const [serviceAreas, setServiceAreas] = useState<ServiceAreaSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [riderRateByArea, setRiderRateByArea] = useState<Record<string, string>>({});
 
   // New location form state
   const [newLocationName, setNewLocationName] = useState('');
@@ -38,7 +39,11 @@ export default function LocationsPage() {
       .catch((e) => setError(e.message));
     api
       .get<ServiceAreaSummary[]>('/api/admin/service-areas')
-      .then(setServiceAreas)
+      .then(async (areas) => {
+        setServiceAreas(areas);
+        const configs = await Promise.all(areas.map(async (area) => [area.id, await api.get<any>(`/api/admin/pricing/service-areas/${area.id}`)] as const));
+        setRiderRateByArea(Object.fromEntries(configs.map(([id, config]) => [id, String(config.riderPayoutRatePercent ?? 92)])));
+      })
       .catch((e) => setError(e.message));
   }
 
@@ -87,6 +92,14 @@ export default function LocationsPage() {
     } catch (err: any) {
       setError(err.message);
     }
+  }
+
+
+  async function saveRiderRate(serviceAreaId: string) {
+    const value = Number(riderRateByArea[serviceAreaId]);
+    if (!Number.isFinite(value) || value < 0 || value > 100) { setError('Rider payout rate must be between 0% and 100%.'); return; }
+    try { await api.patch(`/api/admin/pricing/service-areas/${serviceAreaId}`, { riderPayoutRatePercent: value }); setError(null); load(); }
+    catch (err: any) { setError(err.message); }
   }
 
   async function setStatus(serviceAreaId: string, status: string) {
@@ -184,6 +197,12 @@ export default function LocationsPage() {
 
                 <div className="mt-2 text-xs text-gray-500">
                   Zones: {area.deliveryZones.map((z) => z.name).join(', ') || 'none yet'}
+                </div>
+
+                <div className="mt-2 flex items-center gap-2">
+                  <label className="text-xs text-gray-500">Rider payout %</label>
+                  <input type="number" min="0" max="100" step="0.01" value={riderRateByArea[area.id] ?? '92'} onChange={(e) => setRiderRateByArea((prev) => ({ ...prev, [area.id]: e.target.value }))} className="w-20 rounded-md border border-gray-300 px-2 py-1 text-xs" />
+                  <button onClick={() => saveRiderRate(area.id)} className="rounded-md bg-gray-100 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-200">Save</button>
                 </div>
 
                 <div className="mt-2 flex flex-wrap items-center gap-2">

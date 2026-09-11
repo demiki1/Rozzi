@@ -96,6 +96,7 @@ export class LedgerService {
             commissionAmountSnapshot: true,
           },
         },
+        pricingConfig: { select: { riderPayoutRatePercent: true } },
       },
     });
     if (!order) {
@@ -139,23 +140,17 @@ export class LedgerService {
       idempotencyKey: `order:${order.id}:platform-commission`,
     });
 
-    // Rider payout: only for platform-delivered orders with an assigned
-    // rider. KNOWN SIMPLIFICATION, flagged: the rider gets the FULL
-    // delivery fee â€” there's no admin-configurable split (e.g. platform
-    // keeps a cut of the delivery fee too) because Â§18/Â§78 don't specify
-    // one concretely enough to hard-code a number. If you want the
-    // platform to retain a portion of the delivery fee, this is the one
-    // place that changes.
-    if (order.delivery?.riderId) {
-      await this.record({
-        type: LedgerEntryType.RIDER_EARNING,
-        accountType: LedgerAccountType.RIDER,
-        accountId: order.delivery.riderId,
-        orderId: order.id,
-        amount: order.deliveryFeeAmount,
-        description: `Delivery payout for order ${order.orderNumber}`,
-        idempotencyKey: `order:${order.id}:rider-earning`,
-      });
+    const riderPayoutRate = Math.min(100, Math.max(0, Number(order.riderPayoutRateSnapshot ?? order.pricingConfig?.riderPayoutRatePercent ?? 92)));
+
+    if (order.riderPayoutRateSnapshot == null) {
+      await this.prisma.order.update({ where: { id: order.id }, data: { riderPayoutRateSnapshot: riderPayoutRate } });
+    }
+
+    if (order.delivery?.riderId && order.deliveryFeeAmount > 0) {
+      const riderEarning = Math.round(order.deliveryFeeAmount * riderPayoutRate / 100);
+      const rozziDeliveryShare = order.deliveryFeeAmount - riderEarning;
+      await this.record({ type: LedgerEntryType.RIDER_EARNING, accountType: LedgerAccountType.RIDER, accountId: order.delivery.riderId, orderId: order.id, amount: riderEarning, description: `Delivery payout (${riderPayoutRate}% rider) for order ${order.orderNumber}`, idempotencyKey: `order:${order.id}:rider-earning` });
+      if (rozziDeliveryShare > 0) await this.record({ type: LedgerEntryType.PLATFORM_COMMISSION, accountType: LedgerAccountType.PLATFORM, orderId: order.id, amount: rozziDeliveryShare, description: `Delivery revenue (${100 - riderPayoutRate}% ROZZI) for order ${order.orderNumber}`, idempotencyKey: `order:${order.id}:delivery-platform-share` });
     }
 
     // Service fee (Â§61 lists it as its own revenue line) is booked as a
@@ -205,6 +200,7 @@ export class LedgerService {
             commissionAmountSnapshot: true,
           },
         },
+        pricingConfig: { select: { riderPayoutRatePercent: true } },
       },
     });
     if (!order) return;
@@ -223,7 +219,9 @@ export class LedgerService {
     const base = Math.max(1, order.totalAmount);
     const vendorReversal = Math.min(vendorEarning, Math.round(refundAmount * vendorEarning /base));
     const commissionReversal = Math.min(commission + order.serviceFeeAmount, Math.max(0, refundAmount - vendorReversal));
-    const riderReversal = order.delivery?.riderId ? Math.min(order.deliveryFeeAmount, Math.max(0, refundAmount - vendorReversal - commissionReversal)) : 0;
+    const riderRate = Math.min(100, Math.max(0, Number(order.riderPayoutRateSnapshot ?? order.pricingConfig?.riderPayoutRatePercent ?? 92)));
+    const riderEarned = Math.round(order.deliveryFeeAmount * riderRate / 100);
+    const riderReversal = order.delivery?.riderId ? Math.min(riderEarned, Math.max(0, refundAmount - vendorReversal - commissionReversal)) : 0;
 
     if (vendorReversal > 0) await this.record({ type: LedgerEntryType.VENDOR_EARNING, accountType: LedgerAccountType.VENDOR, accountId: order.vendorId, orderId: order.id, amount: -vendorReversal, description: `Vendor earning reversal for refund ${payload.refundId}`, idempotencyKey: `refund:${payload.refundId}:vendor` });
     if (commissionReversal > 0) await this.record({ type: LedgerEntryType.PLATFORM_COMMISSION, accountType: LedgerAccountType.PLATFORM, orderId: order.id, amount: -commissionReversal, description: `Platform revenue reversal for refund ${payload.refundId}`, idempotencyKey: `refund:${payload.refundId}:platform-revenue` });

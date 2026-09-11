@@ -37,6 +37,7 @@ async function main() {
         baseDeliveryFee: 45000,
         perKmDeliveryFee: 10000,
         deliveryRadiusKm: 8,
+        riderPayoutRatePercent: 92,
 
         surgeEnabled: true,
         surgeLevel: 'NORMAL',

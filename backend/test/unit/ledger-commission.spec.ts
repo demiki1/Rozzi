@@ -17,6 +17,7 @@ function buildPrismaMock(order: any) {
       },
       order: {
         findUnique: jest.fn(async () => order),
+        update: jest.fn(async ({ data }: any) => ({ ...order, ...data })),
       },
     },
     created,
@@ -73,7 +74,8 @@ describe('LedgerService — order-delivered booking (§21)', () => {
     expect(vendorEntry.amount + commissionEntry.amount).toBe(1_000_000);
 
     // Rider payout remains the full delivery fee in the current ledger model.
-    expect(riderEntry.amount).toBe(order.deliveryFeeAmount);
+    expect(riderEntry.amount).toBe(73_600);
+    expect(created.find((e) => e.description?.includes('Delivery revenue (8% ROZZI)')).amount).toBe(6_400);
     expect(riderEntry.accountId).toBe('rider-1');
 
     expect(serviceFeeEntry.amount).toBe(order.serviceFeeAmount);
