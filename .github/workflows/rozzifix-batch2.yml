@@ -1,5 +1,5 @@
 # Batch 2: financial funding and cancellation UX hardening.
-# Activation commit: run this workflow on the next branch push.
+# E2E fixture alignment: pricing is an existing required order dependency.
 name: ROZZI batch 2 hardening
 
 on:
@@ -46,7 +46,7 @@ jobs:
           cache: npm
           cache-dependency-path: backend/package-lock.json
 
-      - name: Apply batch 2 fixes
+      - name: Apply batch 2 fixes and stale e2e fixture
         shell: bash
         run: |
           python3 <<'PY'
@@ -54,6 +54,8 @@ jobs:
           def read(p): return Path(p).read_text(encoding='utf-8-sig')
           def write(p, s): Path(p).write_text(s, encoding='utf-8')
 
+          # Reuse the existing Promotion.vendorId distinction. No new sponsor
+          # model or product architecture is introduced.
           p='backend/src/modules/finance/ledger.service.ts'; s=read(p)
           if 'promotion: { select: { vendorId: true } }' not in s:
               s=s.replace('        pricingConfig: { select: { riderPayoutRatePercent: true } },','        pricingConfig: { select: { riderPayoutRatePercent: true } },\n        promotion: { select: { vendorId: true } },',2)
@@ -70,16 +72,30 @@ jobs:
           if old2 in s: s=s.replace(old2,new2,1)
           write(p,s)
 
+          # Existing cancellation/refund state is intentionally asynchronous;
+          # only clarify it in the customer UI.
           p='apps/customer/src/app/orders/[id]/page.tsx'; s=read(p)
           if 'refund is pending' not in s:
               s=s.replace("if(!o)return <main className=\"shell\">Loading…</main>;return <main","if(!o)return <main className=\"shell\">Loading…</main>;const latestPayment=o.payments?.[0];const refundPending=o.status==='CANCELLED'&&latestPayment?.status==='SUCCESS';const refundProcessed=o.status==='CANCELLED'&&latestPayment?.status==='REFUNDED';return <main",1)
               s=s.replace('<div className="status">{o.status}</div>','<div className="status">{o.status}</div>{refundPending&&<div className="card" style={{marginTop:12}}><strong>Refund pending</strong><p className="muted">Your order was cancelled. Your payment has not been refunded yet. ROZZI will process the refund separately.</p></div>}{refundProcessed&&<div className="card" style={{marginTop:12}}><strong>Refund processed</strong><p className="muted">Your refund has been processed.</p></div>}',1)
           write(p,s)
 
+          # Existing ledger fixture: add coverage for both promotion sponsors.
           p='backend/test/unit/ledger-commission.spec.ts'; s=read(p)
           if 'vendor-funded promotion' not in s:
               test='''\n  it('charges a vendor-funded promotion against vendor economics and commission base', async () => {\n    const order = { id:'order-promo-vendor', orderNumber:'RZW-PROMO-1', vendorId:'vendor-1', subtotalAmount:900000, discountAmount:100000, totalAmount:915000, deliveryFeeAmount:0, serviceFeeAmount:15000, commissionRateSnapshot:10, promotionId:'promo-1', promotion:{vendorId:'vendor-1'}, items:[{subtotalAmount:1000000,commissionRateSnapshot:10,commissionAmountSnapshot:100000}], delivery:null };\n    const { prisma, created }=buildPrismaMock(order); const service=new LedgerService(prisma as any,auditLogMock);\n    await service.onOrderTransitioned({orderId:order.id,orderNumber:order.orderNumber,customerId:'customer-1',vendorId:order.vendorId,fromStatus:OrderStatus.PREPARING,toStatus:OrderStatus.DELIVERED,deliveryType:'PICKUP'});\n    expect(created.find(e=>e.type===LedgerEntryType.PLATFORM_COMMISSION&&e.description?.includes('Commission')).amount).toBe(90000);\n    expect(created.find(e=>e.type===LedgerEntryType.VENDOR_EARNING).amount).toBe(810000);\n    expect(created.find(e=>e.type===LedgerEntryType.PROMOTION)).toBeUndefined();\n  });\n\n  it('books a ROZZI-funded promotion as a platform promotion expense', async () => {\n    const order = { id:'order-promo-rozzi', orderNumber:'RZW-PROMO-2', vendorId:'vendor-1', subtotalAmount:900000, discountAmount:100000, totalAmount:915000, deliveryFeeAmount:0, serviceFeeAmount:15000, commissionRateSnapshot:10, promotionId:'promo-2', promotion:{vendorId:null}, items:[{subtotalAmount:1000000,commissionRateSnapshot:10,commissionAmountSnapshot:100000}], delivery:null };\n    const { prisma, created }=buildPrismaMock(order); const service=new LedgerService(prisma as any,auditLogMock);\n    await service.onOrderTransitioned({orderId:order.id,orderNumber:order.orderNumber,customerId:'customer-1',vendorId:order.vendorId,fromStatus:OrderStatus.PREPARING,toStatus:OrderStatus.DELIVERED,deliveryType:'PICKUP'});\n    expect(created.find(e=>e.type===LedgerEntryType.PROMOTION).amount).toBe(-100000);\n    expect(created.find(e=>e.type===LedgerEntryType.VENDOR_EARNING).amount).toBe(900000);\n  });\n'''
               s=s.replace('\n});\n',test+'\n});\n',1)
+          write(p,s)
+
+          # The order lifecycle test creates a service area directly. Pricing
+          # is now an explicit existing dependency of checkout, so add the
+          # minimal fixture rather than weakening checkout validation.
+          p='backend/test/e2e/order-lifecycle.e2e-spec.ts'; s=read(p)
+          if 'serviceArea.pricingConfigs' not in s and 'serviceAreaId, serviceFeeRatePercent' not in s:
+              anchor='''    serviceAreaId = serviceArea.id;\n    const zone = await prisma.deliveryZone.create({'''
+              replacement='''    serviceAreaId = serviceArea.id;\n    await prisma.pricingConfig.create({\n      data: {\n        serviceAreaId,\n        serviceFeeRatePercent: 0,\n        serviceFeeCapAmount: 100_000,\n        baseDeliveryFee: 50_000,\n        perKmDeliveryFee: 0,\n        deliveryRadiusKm: 10,\n        riderPayoutRatePercent: 92,\n        isActive: true,\n      },\n    });\n    const zone = await prisma.deliveryZone.create({'''
+              if anchor not in s: raise SystemExit('e2e service-area fixture anchor not found')
+              s=s.replace(anchor,replacement,1)
           write(p,s)
           PY
 
@@ -103,5 +119,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git diff --check
-          git add backend/src/modules/finance/ledger.service.ts backend/test/unit/ledger-commission.spec.ts apps/customer/src/app/orders/[id]/page.tsx .github/workflows/rozzifix-batch2.yml
+          git add backend/src/modules/finance/ledger.service.ts backend/test/unit/ledger-commission.spec.ts backend/test/e2e/order-lifecycle.e2e-spec.ts apps/customer/src/app/orders/[id]/page.tsx .github/workflows/rozzifix-batch2.yml
           if git diff --cached --quiet; then echo "No batch 2 production changes to commit."; else git commit -m "fix: harden promotion funding and cancellation refunds" && git push; fi
