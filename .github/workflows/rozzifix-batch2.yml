@@ -1,4 +1,5 @@
 # Batch 2: financial funding and cancellation UX hardening.
+# Activation commit: run this workflow on the next branch push.
 name: ROZZI batch 2 hardening
 
 on:
@@ -50,17 +51,14 @@ jobs:
         run: |
           python3 <<'PY'
           from pathlib import Path
-          import re
           def read(p): return Path(p).read_text(encoding='utf-8-sig')
           def write(p, s): Path(p).write_text(s, encoding='utf-8')
 
-          # Reuse Promotion.vendorId: non-null means vendor-funded; null means
-          # ROZZI/global campaign. No sponsor table or new product architecture.
           p='backend/src/modules/finance/ledger.service.ts'; s=read(p)
           if 'promotion: { select: { vendorId: true } }' not in s:
               s=s.replace('        pricingConfig: { select: { riderPayoutRatePercent: true } },','        pricingConfig: { select: { riderPayoutRatePercent: true } },\n        promotion: { select: { vendorId: true } },',2)
           old='''    const commissionAmount = order.items.reduce(\n      (sum, item) => sum + item.commissionAmountSnapshot,\n      0,\n    );\n    const commissionableMerchandise = order.items.reduce(\n      (sum, item) => sum + item.subtotalAmount,\n      0,\n    );\n    const vendorEarning = Math.max(\n      0,\n      commissionableMerchandise - commissionAmount,\n    );'''
-          new='''    const commissionableMerchandise = order.items.reduce((sum, item) => sum + item.subtotalAmount, 0);\n    const promotionDiscount = Math.min(Math.max(0, order.discountAmount), commissionableMerchandise);\n    const vendorFundedPromotion = Boolean(order.promotionId && order.promotion?.vendorId);\n    const netCommissionBase = vendorFundedPromotion ? Math.max(0, commissionableMerchandise - promotionDiscount) : commissionableMerchandise;\n    const grossCommission = order.items.reduce((sum, item) => sum + item.commissionAmountSnapshot, 0);\n    const commissionAmount = vendorFundedPromotion && commissionableMerchandise > 0\n      ? Math.min(grossCommission, Math.round(grossCommission * netCommissionBase / commissionableMerchandise))\n      : grossCommission;\n    const vendorEarning = Math.max(0, netCommissionBase - commissionAmount);'''
+          new='''    const commissionableMerchandise = order.items.reduce((sum, item) => sum + item.subtotalAmount, 0);\n    const promotionDiscount = Math.min(Math.max(0, order.discountAmount), commissionableMerchandise);\n    const vendorFundedPromotion = Boolean(order.promotionId && order.promotion?.vendorId);\n    const netCommissionBase = vendorFundedPromotion ? Math.max(0, commissionableMerchandise - promotionDiscount) : commissionableMerchandise;\n    const grossCommission = order.items.reduce((sum, item) => sum + item.commissionAmountSnapshot, 0);\n    const commissionAmount = vendorFundedPromotion && commissionableMerchandise > 0 ? Math.min(grossCommission, Math.round(grossCommission * netCommissionBase / commissionableMerchandise)) : grossCommission;\n    const vendorEarning = Math.max(0, netCommissionBase - commissionAmount);'''
           if old in s: s=s.replace(old,new,1)
           elif 'const netCommissionBase =' not in s: raise SystemExit('delivery commission block not found')
           anchor='''    await this.record({\n      type: LedgerEntryType.PLATFORM_COMMISSION,\n      accountType: LedgerAccountType.PLATFORM,\n      orderId: order.id,\n      amount: commissionAmount,\n      description: `Commission (${order.commissionRateSnapshot}%) on order ${order.orderNumber}`,\n      idempotencyKey: `order:${order.id}:platform-commission`,\n    });'''
@@ -68,12 +66,8 @@ jobs:
               if anchor not in s: raise SystemExit('platform commission anchor not found')
               s=s.replace(anchor,anchor+'''\n\n    if (promotionDiscount > 0 && !vendorFundedPromotion) {\n      await this.record({ type: LedgerEntryType.PROMOTION, accountType: LedgerAccountType.PLATFORM, orderId: order.id, amount: -promotionDiscount, description: `ROZZI-funded promotion for order ${order.orderNumber}`, idempotencyKey: `order:${order.id}:promotion-expense` });\n    }''',1)
           old2='''    const commission = order.items.reduce(\n      (sum, item) => sum + item.commissionAmountSnapshot,\n      0,\n    );\n    const commissionableMerchandise = order.items.reduce(\n      (sum, item) => sum + item.subtotalAmount,\n      0,\n    );\n    const vendorEarning = Math.max(\n      0,\n      commissionableMerchandise - commission,\n    );'''
-          new2='''    const commissionableMerchandise = order.items.reduce((sum, item) => sum + item.subtotalAmount, 0);\n    const promotionDiscount = Math.min(Math.max(0, order.discountAmount), commissionableMerchandise);\n    const vendorFundedPromotion = Boolean(order.promotionId && order.promotion?.vendorId);\n    const netCommissionBase = vendorFundedPromotion ? Math.max(0, commissionableMerchandise - promotionDiscount) : commissionableMerchandise;\n    const grossCommission = order.items.reduce((sum, item) => sum + item.commissionAmountSnapshot, 0);\n    const commission = vendorFundedPromotion && commissionableMerchandise > 0\n      ? Math.min(grossCommission, Math.round(grossCommission * netCommissionBase / commissionableMerchandise))\n      : grossCommission;\n    const vendorEarning = Math.max(0, netCommissionBase - commission);'''
+          new2='''    const commissionableMerchandise = order.items.reduce((sum, item) => sum + item.subtotalAmount, 0);\n    const promotionDiscount = Math.min(Math.max(0, order.discountAmount), commissionableMerchandise);\n    const vendorFundedPromotion = Boolean(order.promotionId && order.promotion?.vendorId);\n    const netCommissionBase = vendorFundedPromotion ? Math.max(0, commissionableMerchandise - promotionDiscount) : commissionableMerchandise;\n    const grossCommission = order.items.reduce((sum, item) => sum + item.commissionAmountSnapshot, 0);\n    const commission = vendorFundedPromotion && commissionableMerchandise > 0 ? Math.min(grossCommission, Math.round(grossCommission * netCommissionBase / commissionableMerchandise)) : grossCommission;\n    const vendorEarning = Math.max(0, netCommissionBase - commission);'''
           if old2 in s: s=s.replace(old2,new2,1)
-          elif 'const promotionDiscount =' not in s: raise SystemExit('refund commission block not found')
-          old3='''    if (vendorReversal > 0) await this.record({ type: LedgerEntryType.VENDOR_EARNING, accountType: LedgerAccountType.VENDOR, accountId: order.vendorId, orderId: order.id, amount: -vendorReversal, description: `Vendor earning reversal for refund ${payload.refundId}`, idempotencyKey: `refund:${payload.refundId}:vendor` });\n    if (commissionReversal > 0) await this.record({ type: LedgerEntryType.PLATFORM_COMMISSION, accountType: LedgerAccountType.PLATFORM, orderId: order.id, amount: -commissionReversal, description: `Platform revenue reversal for refund ${payload.refundId}`, idempotencyKey: `refund:${payload.refundId}:platform-revenue` });'''
-          new3=old3+'''\n    if (promotionDiscount > 0 && !vendorFundedPromotion) {\n      const promotionReversal = Math.min(promotionDiscount, Math.max(0, Math.round(refundAmount * promotionDiscount / Math.max(1, order.totalAmount))));\n      if (promotionReversal > 0) await this.record({ type: LedgerEntryType.PROMOTION, accountType: LedgerAccountType.PLATFORM, orderId: order.id, amount: promotionReversal, description: `ROZZI promotion expense reversal for refund ${payload.refundId}`, idempotencyKey: `refund:${payload.refundId}:promotion` });\n    }'''
-          if old3 in s and 'refund:${payload.refundId}:promotion' not in s: s=s.replace(old3,new3,1)
           write(p,s)
 
           p='apps/customer/src/app/orders/[id]/page.tsx'; s=read(p)
