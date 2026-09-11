@@ -1,3 +1,4 @@
+# Batch 2: financial funding and cancellation UX hardening.
 name: ROZZI batch 2 hardening
 
 on:
@@ -50,74 +51,42 @@ jobs:
           python3 <<'PY'
           from pathlib import Path
           import re
-
           def read(p): return Path(p).read_text(encoding='utf-8-sig')
           def write(p, s): Path(p).write_text(s, encoding='utf-8')
 
-          # Financial rule: vendor-funded promotions reduce the vendor's
-          # merchandise earning and the commission base. ROZZI-funded/global
-          # promotions reduce platform revenue instead. Reuse the existing
-          # Promotion.vendorId distinction; no new sponsor architecture.
-          p = 'backend/src/modules/finance/ledger.service.ts'
-          s = read(p)
+          # Reuse Promotion.vendorId: non-null means vendor-funded; null means
+          # ROZZI/global campaign. No sponsor table or new product architecture.
+          p='backend/src/modules/finance/ledger.service.ts'; s=read(p)
           if 'promotion: { select: { vendorId: true } }' not in s:
-              s = s.replace(
-                  '        pricingConfig: { select: { riderPayoutRatePercent: true } },',
-                  '        pricingConfig: { select: { riderPayoutRatePercent: true } },\n        promotion: { select: { vendorId: true } },',
-                  2,
-              )
-
-          old = '''    const commissionAmount = order.items.reduce(\n      (sum, item) => sum + item.commissionAmountSnapshot,\n      0,\n    );\n    const commissionableMerchandise = order.items.reduce(\n      (sum, item) => sum + item.subtotalAmount,\n      0,\n    );\n    const vendorEarning = Math.max(\n      0,\n      commissionableMerchandise - commissionAmount,\n    );'''
-          new = '''    const commissionableMerchandise = order.items.reduce(\n      (sum, item) => sum + item.subtotalAmount,\n      0,\n    );\n    const promotionDiscount = Math.min(\n      Math.max(0, order.discountAmount),\n      commissionableMerchandise,\n    );\n    const vendorFundedPromotion = Boolean(\n      order.promotionId && order.promotion?.vendorId,\n    );\n    const netCommissionBase = vendorFundedPromotion\n      ? Math.max(0, commissionableMerchandise - promotionDiscount)\n      : commissionableMerchandise;\n    const grossCommission = order.items.reduce(\n      (sum, item) => sum + item.commissionAmountSnapshot,\n      0,\n    );\n    const commissionAmount =\n      vendorFundedPromotion && commissionableMerchandise > 0\n        ? Math.min(\n            grossCommission,\n            Math.round(grossCommission * netCommissionBase / commissionableMerchandise),\n          )\n        : grossCommission;\n    const vendorEarning = Math.max(\n      0,\n      netCommissionBase - commissionAmount,\n    );'''
-          if old in s:
-              s = s.replace(old, new, 1)
-          elif 'const netCommissionBase =' not in s:
-              raise SystemExit('delivery ledger commission block not found')
-
-          anchor = '''    await this.record({\n      type: LedgerEntryType.PLATFORM_COMMISSION,\n      accountType: LedgerAccountType.PLATFORM,\n      orderId: order.id,\n      amount: commissionAmount,\n      description: `Commission (${order.commissionRateSnapshot}%) on order ${order.orderNumber}`,\n      idempotencyKey: `order:${order.id}:platform-commission`,\n    });'''
-          promo_entry = anchor + '''\n\n    if (promotionDiscount > 0 && !vendorFundedPromotion) {\n      await this.record({\n        type: LedgerEntryType.PROMOTION,\n        accountType: LedgerAccountType.PLATFORM,\n        orderId: order.id,\n        amount: -promotionDiscount,\n        description: `ROZZI-funded promotion for order ${order.orderNumber}`,\n        idempotencyKey: `order:${order.id}:promotion-expense`,\n      });\n    }'''
+              s=s.replace('        pricingConfig: { select: { riderPayoutRatePercent: true } },','        pricingConfig: { select: { riderPayoutRatePercent: true } },\n        promotion: { select: { vendorId: true } },',2)
+          old='''    const commissionAmount = order.items.reduce(\n      (sum, item) => sum + item.commissionAmountSnapshot,\n      0,\n    );\n    const commissionableMerchandise = order.items.reduce(\n      (sum, item) => sum + item.subtotalAmount,\n      0,\n    );\n    const vendorEarning = Math.max(\n      0,\n      commissionableMerchandise - commissionAmount,\n    );'''
+          new='''    const commissionableMerchandise = order.items.reduce((sum, item) => sum + item.subtotalAmount, 0);\n    const promotionDiscount = Math.min(Math.max(0, order.discountAmount), commissionableMerchandise);\n    const vendorFundedPromotion = Boolean(order.promotionId && order.promotion?.vendorId);\n    const netCommissionBase = vendorFundedPromotion ? Math.max(0, commissionableMerchandise - promotionDiscount) : commissionableMerchandise;\n    const grossCommission = order.items.reduce((sum, item) => sum + item.commissionAmountSnapshot, 0);\n    const commissionAmount = vendorFundedPromotion && commissionableMerchandise > 0\n      ? Math.min(grossCommission, Math.round(grossCommission * netCommissionBase / commissionableMerchandise))\n      : grossCommission;\n    const vendorEarning = Math.max(0, netCommissionBase - commissionAmount);'''
+          if old in s: s=s.replace(old,new,1)
+          elif 'const netCommissionBase =' not in s: raise SystemExit('delivery commission block not found')
+          anchor='''    await this.record({\n      type: LedgerEntryType.PLATFORM_COMMISSION,\n      accountType: LedgerAccountType.PLATFORM,\n      orderId: order.id,\n      amount: commissionAmount,\n      description: `Commission (${order.commissionRateSnapshot}%) on order ${order.orderNumber}`,\n      idempotencyKey: `order:${order.id}:platform-commission`,\n    });'''
           if 'order:${order.id}:promotion-expense' not in s:
               if anchor not in s: raise SystemExit('platform commission anchor not found')
-              s = s.replace(anchor, promo_entry, 1)
+              s=s.replace(anchor,anchor+'''\n\n    if (promotionDiscount > 0 && !vendorFundedPromotion) {\n      await this.record({ type: LedgerEntryType.PROMOTION, accountType: LedgerAccountType.PLATFORM, orderId: order.id, amount: -promotionDiscount, description: `ROZZI-funded promotion for order ${order.orderNumber}`, idempotencyKey: `order:${order.id}:promotion-expense` });\n    }''',1)
+          old2='''    const commission = order.items.reduce(\n      (sum, item) => sum + item.commissionAmountSnapshot,\n      0,\n    );\n    const commissionableMerchandise = order.items.reduce(\n      (sum, item) => sum + item.subtotalAmount,\n      0,\n    );\n    const vendorEarning = Math.max(\n      0,\n      commissionableMerchandise - commission,\n    );'''
+          new2='''    const commissionableMerchandise = order.items.reduce((sum, item) => sum + item.subtotalAmount, 0);\n    const promotionDiscount = Math.min(Math.max(0, order.discountAmount), commissionableMerchandise);\n    const vendorFundedPromotion = Boolean(order.promotionId && order.promotion?.vendorId);\n    const netCommissionBase = vendorFundedPromotion ? Math.max(0, commissionableMerchandise - promotionDiscount) : commissionableMerchandise;\n    const grossCommission = order.items.reduce((sum, item) => sum + item.commissionAmountSnapshot, 0);\n    const commission = vendorFundedPromotion && commissionableMerchandise > 0\n      ? Math.min(grossCommission, Math.round(grossCommission * netCommissionBase / commissionableMerchandise))\n      : grossCommission;\n    const vendorEarning = Math.max(0, netCommissionBase - commission);'''
+          if old2 in s: s=s.replace(old2,new2,1)
+          elif 'const promotionDiscount =' not in s: raise SystemExit('refund commission block not found')
+          old3='''    if (vendorReversal > 0) await this.record({ type: LedgerEntryType.VENDOR_EARNING, accountType: LedgerAccountType.VENDOR, accountId: order.vendorId, orderId: order.id, amount: -vendorReversal, description: `Vendor earning reversal for refund ${payload.refundId}`, idempotencyKey: `refund:${payload.refundId}:vendor` });\n    if (commissionReversal > 0) await this.record({ type: LedgerEntryType.PLATFORM_COMMISSION, accountType: LedgerAccountType.PLATFORM, orderId: order.id, amount: -commissionReversal, description: `Platform revenue reversal for refund ${payload.refundId}`, idempotencyKey: `refund:${payload.refundId}:platform-revenue` });'''
+          new3=old3+'''\n    if (promotionDiscount > 0 && !vendorFundedPromotion) {\n      const promotionReversal = Math.min(promotionDiscount, Math.max(0, Math.round(refundAmount * promotionDiscount / Math.max(1, order.totalAmount))));\n      if (promotionReversal > 0) await this.record({ type: LedgerEntryType.PROMOTION, accountType: LedgerAccountType.PLATFORM, orderId: order.id, amount: promotionReversal, description: `ROZZI promotion expense reversal for refund ${payload.refundId}`, idempotencyKey: `refund:${payload.refundId}:promotion` });\n    }'''
+          if old3 in s and 'refund:${payload.refundId}:promotion' not in s: s=s.replace(old3,new3,1)
+          write(p,s)
 
-          # Mirror the same economics when a delivered order is refunded.
-          old_refund = '''    const commission = order.items.reduce(\n      (sum, item) => sum + item.commissionAmountSnapshot,\n      0,\n    );\n    const commissionableMerchandise = order.items.reduce(\n      (sum, item) => sum + item.subtotalAmount,\n      0,\n    );\n    const vendorEarning = Math.max(\n      0,\n      commissionableMerchandise - commission,\n    );'''
-          new_refund = '''    const commissionableMerchandise = order.items.reduce(\n      (sum, item) => sum + item.subtotalAmount,\n      0,\n    );\n    const promotionDiscount = Math.min(\n      Math.max(0, order.discountAmount),\n      commissionableMerchandise,\n    );\n    const vendorFundedPromotion = Boolean(\n      order.promotionId && order.promotion?.vendorId,\n    );\n    const netCommissionBase = vendorFundedPromotion\n      ? Math.max(0, commissionableMerchandise - promotionDiscount)\n      : commissionableMerchandise;\n    const grossCommission = order.items.reduce(\n      (sum, item) => sum + item.commissionAmountSnapshot,\n      0,\n    );\n    const commission =\n      vendorFundedPromotion && commissionableMerchandise > 0\n        ? Math.min(\n            grossCommission,\n            Math.round(grossCommission * netCommissionBase / commissionableMerchandise),\n          )\n        : grossCommission;\n    const vendorEarning = Math.max(\n      0,\n      netCommissionBase - commission,\n    );'''
-          if old_refund in s:
-              s = s.replace(old_refund, new_refund, 1)
-          elif 'const netCommissionBase =' not in s:
-              raise SystemExit('refund ledger commission block not found')
-
-          old_reversal = '''    if (vendorReversal > 0) await this.record({ type: LedgerEntryType.VENDOR_EARNING, accountType: LedgerAccountType.VENDOR, accountId: order.vendorId, orderId: order.id, amount: -vendorReversal, description: `Vendor earning reversal for refund ${payload.refundId}`, idempotencyKey: `refund:${payload.refundId}:vendor` });\n    if (commissionReversal > 0) await this.record({ type: LedgerEntryType.PLATFORM_COMMISSION, accountType: LedgerAccountType.PLATFORM, orderId: order.id, amount: -commissionReversal, description: `Platform revenue reversal for refund ${payload.refundId}`, idempotencyKey: `refund:${payload.refundId}:platform-revenue` });'''
-          new_reversal = '''    if (vendorReversal > 0) await this.record({ type: LedgerEntryType.VENDOR_EARNING, accountType: LedgerAccountType.VENDOR, accountId: order.vendorId, orderId: order.id, amount: -vendorReversal, description: `Vendor earning reversal for refund ${payload.refundId}`, idempotencyKey: `refund:${payload.refundId}:vendor` });\n    if (commissionReversal > 0) await this.record({ type: LedgerEntryType.PLATFORM_COMMISSION, accountType: LedgerAccountType.PLATFORM, orderId: order.id, amount: -commissionReversal, description: `Platform revenue reversal for refund ${payload.refundId}`, idempotencyKey: `refund:${payload.refundId}:platform-revenue` });\n    if (promotionDiscount > 0 && !vendorFundedPromotion) {\n      const promotionReversal = Math.min(promotionDiscount, Math.max(0, Math.round(refundAmount * promotionDiscount / Math.max(1, order.totalAmount))));\n      if (promotionReversal > 0) await this.record({ type: LedgerEntryType.PROMOTION, accountType: LedgerAccountType.PLATFORM, orderId: order.id, amount: promotionReversal, description: `ROZZI promotion expense reversal for refund ${payload.refundId}`, idempotencyKey: `refund:${payload.refundId}:promotion` });\n    }'''
-          if old_reversal in s:
-              s = s.replace(old_reversal, new_reversal, 1)
-          write(p, s)
-
-          # Customer cancellation UX: use existing payment/refund state. No new
-          # schema field and no automatic refund is introduced.
-          p = 'apps/customer/src/app/orders/[id]/page.tsx'
-          s = read(p)
+          p='apps/customer/src/app/orders/[id]/page.tsx'; s=read(p)
           if 'refund is pending' not in s:
-              s = s.replace(
-                  "if(!o)return <main className=\"shell\">Loading…</main>;return <main",
-                  "if(!o)return <main className=\"shell\">Loading…</main>;const latestPayment=o.payments?.[0];const refundPending=o.status==='CANCELLED'&&latestPayment?.status==='SUCCESS';const refundProcessed=o.status==='CANCELLED'&&latestPayment?.status==='REFUNDED';return <main",
-                  1,
-              )
-              s = s.replace(
-                  '<div className="status">{o.status}</div>',
-                  '<div className="status">{o.status}</div>{refundPending&&<div className="card" style={{marginTop:12}}><strong>Refund pending</strong><p className="muted">Your order was cancelled. Your payment has not been refunded yet. ROZZI will process the refund separately.</p></div>}{refundProcessed&&<div className="card" style={{marginTop:12}}><strong>Refund processed</strong><p className="muted">Your refund has been processed.</p></div>}',
-                  1,
-              )
-          write(p, s)
+              s=s.replace("if(!o)return <main className=\"shell\">Loading…</main>;return <main","if(!o)return <main className=\"shell\">Loading…</main>;const latestPayment=o.payments?.[0];const refundPending=o.status==='CANCELLED'&&latestPayment?.status==='SUCCESS';const refundProcessed=o.status==='CANCELLED'&&latestPayment?.status==='REFUNDED';return <main",1)
+              s=s.replace('<div className="status">{o.status}</div>','<div className="status">{o.status}</div>{refundPending&&<div className="card" style={{marginTop:12}}><strong>Refund pending</strong><p className="muted">Your order was cancelled. Your payment has not been refunded yet. ROZZI will process the refund separately.</p></div>}{refundProcessed&&<div className="card" style={{marginTop:12}}><strong>Refund processed</strong><p className="muted">Your refund has been processed.</p></div>}',1)
+          write(p,s)
 
-          # Strengthen the ledger fixture without weakening production logic.
-          p = 'backend/test/unit/ledger-commission.spec.ts'
-          s = read(p)
+          p='backend/test/unit/ledger-commission.spec.ts'; s=read(p)
           if 'vendor-funded promotion' not in s:
-              test = '''\n  it('charges a vendor-funded promotion against vendor economics and commission base', async () => {\n    const order = {\n      id: 'order-promo-vendor', orderNumber: 'RZW-PROMO-1', vendorId: 'vendor-1',\n      subtotalAmount: 900_000, discountAmount: 100_000, totalAmount: 915_000,\n      deliveryFeeAmount: 0, serviceFeeAmount: 15_000, commissionRateSnapshot: 10,\n      promotionId: 'promo-1', promotion: { vendorId: 'vendor-1' },\n      items: [{ subtotalAmount: 1_000_000, commissionRateSnapshot: 10, commissionAmountSnapshot: 100_000 }],\n      delivery: null,\n    };\n    const { prisma, created } = buildPrismaMock(order);\n    const service = new LedgerService(prisma as any, auditLogMock);\n    await service.onOrderTransitioned({ orderId: order.id, orderNumber: order.orderNumber, customerId: 'customer-1', vendorId: order.vendorId, fromStatus: OrderStatus.PREPARING, toStatus: OrderStatus.DELIVERED, deliveryType: 'PICKUP' });\n    const vendor = created.find((e) => e.type === LedgerEntryType.VENDOR_EARNING);\n    const commission = created.find((e) => e.type === LedgerEntryType.PLATFORM_COMMISSION && e.description?.includes('Commission'));\n    expect(commission.amount).toBe(90_000);\n    expect(vendor.amount).toBe(810_000);\n    expect(created.find((e) => e.type === LedgerEntryType.PROMOTION)).toBeUndefined();\n  });\n\n  it('books a ROZZI-funded promotion as a platform promotion expense', async () => {\n    const order = {\n      id: 'order-promo-rozzi', orderNumber: 'RZW-PROMO-2', vendorId: 'vendor-1',\n      subtotalAmount: 900_000, discountAmount: 100_000, totalAmount: 915_000,\n      deliveryFeeAmount: 0, serviceFeeAmount: 15_000, commissionRateSnapshot: 10,\n      promotionId: 'promo-2', promotion: { vendorId: null },\n      items: [{ subtotalAmount: 1_000_000, commissionRateSnapshot: 10, commissionAmountSnapshot: 100_000 }],\n      delivery: null,\n    };\n    const { prisma, created } = buildPrismaMock(order);\n    const service = new LedgerService(prisma as any, auditLogMock);\n    await service.onOrderTransitioned({ orderId: order.id, orderNumber: order.orderNumber, customerId: 'customer-1', vendorId: order.vendorId, fromStatus: OrderStatus.PREPARING, toStatus: OrderStatus.DELIVERED, deliveryType: 'PICKUP' });\n    const promotion = created.find((e) => e.type === LedgerEntryType.PROMOTION);\n    expect(promotion.amount).toBe(-100_000);\n    expect(created.find((e) => e.type === LedgerEntryType.VENDOR_EARNING).amount).toBe(900_000);\n  });\n'''
-              s = s.replace('\n});\n', test + '\n});\n', 1)
-          write(p, s)
+              test='''\n  it('charges a vendor-funded promotion against vendor economics and commission base', async () => {\n    const order = { id:'order-promo-vendor', orderNumber:'RZW-PROMO-1', vendorId:'vendor-1', subtotalAmount:900000, discountAmount:100000, totalAmount:915000, deliveryFeeAmount:0, serviceFeeAmount:15000, commissionRateSnapshot:10, promotionId:'promo-1', promotion:{vendorId:'vendor-1'}, items:[{subtotalAmount:1000000,commissionRateSnapshot:10,commissionAmountSnapshot:100000}], delivery:null };\n    const { prisma, created }=buildPrismaMock(order); const service=new LedgerService(prisma as any,auditLogMock);\n    await service.onOrderTransitioned({orderId:order.id,orderNumber:order.orderNumber,customerId:'customer-1',vendorId:order.vendorId,fromStatus:OrderStatus.PREPARING,toStatus:OrderStatus.DELIVERED,deliveryType:'PICKUP'});\n    expect(created.find(e=>e.type===LedgerEntryType.PLATFORM_COMMISSION&&e.description?.includes('Commission')).amount).toBe(90000);\n    expect(created.find(e=>e.type===LedgerEntryType.VENDOR_EARNING).amount).toBe(810000);\n    expect(created.find(e=>e.type===LedgerEntryType.PROMOTION)).toBeUndefined();\n  });\n\n  it('books a ROZZI-funded promotion as a platform promotion expense', async () => {\n    const order = { id:'order-promo-rozzi', orderNumber:'RZW-PROMO-2', vendorId:'vendor-1', subtotalAmount:900000, discountAmount:100000, totalAmount:915000, deliveryFeeAmount:0, serviceFeeAmount:15000, commissionRateSnapshot:10, promotionId:'promo-2', promotion:{vendorId:null}, items:[{subtotalAmount:1000000,commissionRateSnapshot:10,commissionAmountSnapshot:100000}], delivery:null };\n    const { prisma, created }=buildPrismaMock(order); const service=new LedgerService(prisma as any,auditLogMock);\n    await service.onOrderTransitioned({orderId:order.id,orderNumber:order.orderNumber,customerId:'customer-1',vendorId:order.vendorId,fromStatus:OrderStatus.PREPARING,toStatus:OrderStatus.DELIVERED,deliveryType:'PICKUP'});\n    expect(created.find(e=>e.type===LedgerEntryType.PROMOTION).amount).toBe(-100000);\n    expect(created.find(e=>e.type===LedgerEntryType.VENDOR_EARNING).amount).toBe(900000);\n  });\n'''
+              s=s.replace('\n});\n',test+'\n});\n',1)
+          write(p,s)
           PY
 
       - name: Validate full repository
@@ -130,18 +99,10 @@ jobs:
           npm run build
           npm test -- --runInBand
           npm run test:e2e -- --runInBand
-          cd ../apps/admin
-          npm ci --no-audit --no-fund
-          npm run build
-          cd ../customer
-          npm ci --no-audit --no-fund
-          npm run build
-          cd ../vendor
-          npm ci --no-audit --no-fund
-          npm run build
-          cd ../rider
-          npm ci --no-audit --no-fund
-          npm run build
+          cd ../apps/admin && npm ci --no-audit --no-fund && npm run build
+          cd ../customer && npm ci --no-audit --no-fund && npm run build
+          cd ../vendor && npm ci --no-audit --no-fund && npm run build
+          cd ../rider && npm ci --no-audit --no-fund && npm run build
 
       - name: Commit validated batch 2
         run: |
