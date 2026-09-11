@@ -598,7 +598,18 @@ export class PaymentsService {
   async verifyByReference(
     reference: string,
     providerTransactionId?: string,
+    customerId?: string,
   ) {
+    const payment = await this.prisma.payment.findUnique({
+      where: { reference },
+      select: {
+        order: { select: { customerId: true } },
+      },
+    });
+
+    if (!payment || (customerId && payment.order.customerId !== customerId)) {
+      throw new NotFoundException('Payment not found.');
+    }
     return this.processVerification(
       reference,
       'manual_verify',
@@ -856,10 +867,10 @@ export class PaymentsService {
 
     if (verification.status === 'success') {
       if (
-        verification.amountKobo < payment.amount
+        verification.amountKobo !== payment.amount
       ) {
         throw new ConflictException(
-          'Flutterwave payment amount is below the expected order total.',
+          'Flutterwave payment amount does not match the expected order total.',
         );
       }
 
