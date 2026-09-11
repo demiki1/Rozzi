@@ -2,8 +2,6 @@ const { PrismaClient } = require('@prisma/client');
 
 const prisma = new PrismaClient();
 
-// Final batch validation trigger; removed after validation.
-
 async function main() {
   const serviceAreas = await prisma.serviceArea.findMany({
     select: {
