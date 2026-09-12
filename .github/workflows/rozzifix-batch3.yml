@@ -37,30 +37,16 @@ jobs:
           cache-dependency-path: backend/package-lock.json
       - name: Apply promotion scope hardening
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path('backend/src/modules/wallet/wallet.service.ts')
-          text = path.read_text(encoding='utf-8-sig')
-          old = '''        OR: [
-          { vendorId: null },
-          { vendorId: dto.vendorId || undefined },
-        ],'''
-          new = '''        ...(dto.vendorId
-          ? {
-              OR: [
-                { vendorId: null },
-                { vendorId: dto.vendorId },
-              ],
-            }
-          : { vendorId: null }),'''
-          if old not in text:
-              raise SystemExit('promotion scope block not found')
-          path.write_text(text.replace(old, new, 1), encoding='utf-8')
-
-          test_path = Path('backend/test/unit/wallet-promotion-scope.spec.ts')
-          test_path.write_text('''import { WalletService } from '../../src/modules/wallet/wallet.service';\n\ndescribe('WalletService promotion scope', () => {\n  const makeService = (promotion: any) => {\n    const prisma = {\n      promotion: {\n        findFirst: jest.fn().mockResolvedValue(promotion),\n      },\n      promotionRedemption: {\n        count: jest.fn().mockResolvedValue(0),\n      },\n    };\n    return { service: new WalletService(prisma as never), prisma };\n  };\n\n  const promotion = {\n    id: 'promotion-1',\n    code: 'SAVE10',\n    name: 'Save 10',\n    type: 'PERCENTAGE',\n    value: 10,\n    maxDiscount: null,\n    minOrderAmount: 0,\n    usageLimit: null,\n    usageCount: 0,\n    perCustomerLimit: null,\n    vendorId: 'vendor-1',\n    isActive: true,\n    startsAt: new Date(Date.now() - 1000),\n    endsAt: new Date(Date.now() + 100000),\n  };\n\n  it('only considers global promotions when vendorId is omitted', async () => {\n    const { service, prisma } = makeService(promotion);\n\n    await service.applyPromotion('customer-1', {\n      code: 'SAVE10',\n      subtotalAmount: 10000,\n    });\n\n    expect(prisma.promotion.findFirst).toHaveBeenCalledWith({\n      where: {\n        code: 'SAVE10',\n        isActive: true,\n        startsAt: { lte: expect.any(Date) },\n        endsAt: { gte: expect.any(Date) },\n        vendorId: null,\n      },\n    });\n  });\n\n  it('allows a vendor-scoped promotion only for that vendor or global fallback', async () => {\n    const { service, prisma } = makeService(promotion);\n\n    await service.applyPromotion('customer-1', {\n      code: 'SAVE10',\n      subtotalAmount: 10000,\n      vendorId: 'vendor-1',\n    });\n\n    expect(prisma.promotion.findFirst).toHaveBeenCalledWith({\n      where: {\n        code: 'SAVE10',\n        isActive: true,\n        startsAt: { lte: expect.any(Date) },\n        endsAt: { gte: expect.any(Date) },\n        OR: [\n          { vendorId: null },\n          { vendorId: 'vendor-1' },\n        ],\n      },\n    });\n  });\n});\n''', encoding='utf-8')
-          PY
+          python3 -c "from pathlib import Path; p=Path('backend/src/modules/wallet/wallet.service.ts'); s=p.read_text(encoding='utf-8-sig'); old='''        OR: [\n          { vendorId: null },\n          { vendorId: dto.vendorId || undefined },\n        ],'''; new='''        ...(dto.vendorId\n          ? { OR: [{ vendorId: null }, { vendorId: dto.vendorId }] }\n          : { vendorId: null }),'''; assert old in s; p.write_text(s.replace(old,new,1),encoding='utf-8')
+          cat > backend/test/unit/wallet-promotion-scope.spec.ts <<'EOF'
+          import { WalletService } from '../../src/modules/wallet/wallet.service';
+          describe('WalletService promotion scope', () => {
+            const promotion = { id:'p1', code:'SAVE10', name:'Save 10', type:'PERCENTAGE', value:10, maxDiscount:null, minOrderAmount:0, usageLimit:null, usageCount:0, perCustomerLimit:null, vendorId:'v1', isActive:true, startsAt:new Date(Date.now()-1000), endsAt:new Date(Date.now()+100000) };
+            const make = () => { const prisma:any={promotion:{findFirst:jest.fn().mockResolvedValue(promotion)},promotionRedemption:{count:jest.fn().mockResolvedValue(0)}}; return {service:new WalletService(prisma),prisma}; };
+            it('uses only global scope when vendorId is omitted', async () => { const {service,prisma}=make(); await service.applyPromotion('c1',{code:'SAVE10',subtotalAmount:10000}); expect(prisma.promotion.findFirst).toHaveBeenCalledWith(expect.objectContaining({where:expect.objectContaining({vendorId:null})})); });
+            it('limits vendor scope to the requested vendor plus global fallback', async () => { const {service,prisma}=make(); await service.applyPromotion('c1',{code:'SAVE10',subtotalAmount:10000,vendorId:'v1'}); expect(prisma.promotion.findFirst).toHaveBeenCalledWith(expect.objectContaining({where:expect.objectContaining({OR:[{vendorId:null},{vendorId:'v1'}]})})); });
+          });
+          EOF
       - name: Validate full repository
         run: |
           cd backend
