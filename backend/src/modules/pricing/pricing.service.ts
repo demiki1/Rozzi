@@ -16,6 +16,7 @@ const DEFAULT_PRICING = {
   baseDeliveryFee: 45000, // ₦450
   perKmDeliveryFee: 10000, // ₦100/km
   deliveryRadiusKm: 8,
+  riderPayoutRatePercent: 92,
   surgeEnabled: true,
   surgeLevel: SurgeLevel.NORMAL,
   surgeSlightlyHighAmount: 10000, // ₦100
@@ -260,6 +261,13 @@ export class PricingService {
             DEFAULT_PRICING.deliveryRadiusKm,
         ),
 
+      riderPayoutRatePercent:
+        dto.riderPayoutRatePercent ??
+        Number(
+          current?.riderPayoutRatePercent ??
+            DEFAULT_PRICING.riderPayoutRatePercent,
+        ),
+
       surgeEnabled:
         dto.surgeEnabled ??
         current?.surgeEnabled ??
@@ -323,6 +331,8 @@ export class PricingService {
             next.perKmDeliveryFee,
           deliveryRadiusKm:
             new Prisma.Decimal(next.deliveryRadiusKm),
+          riderPayoutRatePercent:
+            next.riderPayoutRatePercent,
           surgeEnabled:
             next.surgeEnabled,
           surgeLevel:
