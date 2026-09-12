@@ -1,9 +1,13 @@
-# Batch 14 payment concurrency hardening. Full validation is mandatory.
-name: ROZZI batch 14 hardening
+# ROZZI hardening validation pipeline. Full repository validation is mandatory.
+name: ROZZI hardening validation
 
 on:
   push:
     branches: [codex/rozzifix-batch1]
+
+concurrency:
+  group: rozzifix-hardening
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -35,8 +39,10 @@ jobs:
           node-version: 20
           cache: npm
           cache-dependency-path: backend/package-lock.json
-      - name: Apply payment hardening
+      - name: Apply refund and payment hardening
         run: python3 .github/patches/batch14-branch.py
+      - name: Apply settlement hardening
+        run: python3 .github/patches/batch15.py
       - name: Validate full repository
         run: |
           cd backend
@@ -50,11 +56,11 @@ jobs:
           cd ../customer && npm ci --no-audit --no-fund && npm run build
           cd ../vendor && npm ci --no-audit --no-fund && npm run build
           cd ../rider && npm ci --no-audit --no-fund && npm run build
-      - name: Commit validated batch 14
+      - name: Commit validated hardening
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git diff --check
-          rm -f .github/patches/batch13.py .github/patches/batch14-branch.py
-          git add backend/src/modules/payments/payments.service.ts backend/test/unit/refund-concurrency.spec.ts .github/workflows/rozzifix-batch3.yml .github/patches/batch13.py .github/patches/batch14-branch.py
-          if git diff --cached --quiet; then echo 'No batch 14 changes.'; else git commit -m 'fix: harden payment concurrency [skip ci]' && git pull --rebase origin codex/rozzifix-batch1 && git push; fi
+          rm -f .github/patches/batch13.py .github/patches/batch14-branch.py .github/patches/batch15.py
+          git add backend/src/modules/payments/payments.service.ts backend/test/unit/refund-concurrency.spec.ts backend/src/modules/finance/ledger.service.ts .github/workflows/rozzifix-batch3.yml .github/patches/batch13.py .github/patches/batch14-branch.py .github/patches/batch15.py
+          if git diff --cached --quiet; then echo 'No pending hardening changes.'; else git commit -m 'fix: harden refund and settlement concurrency [skip ci]' && git pull --rebase origin codex/rozzifix-batch1 && git push; fi
