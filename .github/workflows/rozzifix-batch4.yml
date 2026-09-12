@@ -1,0 +1,113 @@
+# Batch 4 promotion checkout hardening.
+name: ROZZI batch 4 hardening
+
+on:
+  push:
+    branches: [codex/rozzifix-batch1]
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: marketplace_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/marketplace_test
+      JWT_ACCESS_SECRET: ci_test_access_secret_012345678901234567890123
+      JWT_REFRESH_SECRET: ci_test_refresh_secret_012345678901234567890123
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - name: Apply promotion hardening
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          def read(p): return Path(p).read_text(encoding='utf-8-sig')
+          def write(p,s): Path(p).write_text(s,encoding='utf-8')
+
+          p='backend/src/modules/promotions/promotions.service.ts'
+          s=read(p)
+          s=s.replace("import { PromotionType } from '@prisma/client';", "import { Prisma, PromotionType } from '@prisma/client';", 1)
+          old="async validate(code:string, customerId:string, subtotal:number, vendorId?:string){const now=new Date();const p=await this.prisma.promotion.findFirst({where:{code:this.normalize(code),OR:vendorId?[{vendorId},{vendorId:null}]:[{vendorId:null}]}});if(!p||!p.isActive||p.startsAt>now||p.endsAt<now)throw new BadRequestException('Promotion is invalid or expired.');if(subtotal<p.minOrderAmount)throw new BadRequestException(`Minimum order for this promotion is ${p.minOrderAmount/100} NGN.`);if(p.usageLimit!==null&&p.usageCount>=p.usageLimit)throw new BadRequestException('Promotion usage limit reached.');if(p.perCustomerLimit){const used=await this.prisma.order.count({where:{customerId,promotionId:p.id}});if(used>=p.perCustomerLimit)throw new BadRequestException('You have reached this promotion limit.');}let discount=p.type===PromotionType.PERCENTAGE?Math.floor(subtotal*p.value/100):p.value;if(p.maxDiscount!==null)discount=Math.min(discount,p.maxDiscount);discount=Math.min(discount,subtotal);return{id:p.id,code:p.code,discount};}"
+          new="""async validate(code:string, customerId:string, subtotal:number, vendorId?:string){const normalizedCode=this.normalize(code);const now=new Date();const p=vendorId?(await this.prisma.promotion.findFirst({where:{code:normalizedCode,vendorId}})??await this.prisma.promotion.findFirst({where:{code:normalizedCode,vendorId:null}})):await this.prisma.promotion.findFirst({where:{code:normalizedCode,vendorId:null}});if(!p||!p.isActive||p.startsAt>now||p.endsAt<now)throw new BadRequestException('Promotion is invalid or expired.');if(subtotal<p.minOrderAmount)throw new BadRequestException(`Minimum order for this promotion is ${p.minOrderAmount/100} NGN.`);if(p.usageLimit!==null&&p.usageCount>=p.usageLimit)throw new BadRequestException('Promotion usage limit reached.');if(p.perCustomerLimit){const used=await this.prisma.order.count({where:{customerId,promotionId:p.id}});if(used>=p.perCustomerLimit)throw new BadRequestException('You have reached this promotion limit.');}let discount=p.type===PromotionType.PERCENTAGE?Math.floor(subtotal*p.value/100):p.value;if(p.maxDiscount!==null)discount=Math.min(discount,p.maxDiscount);discount=Math.min(discount,subtotal);return{id:p.id,code:p.code,discount};}
+  async consumePromotion(tx: Prisma.TransactionClient, promotionId:string, customerId:string, subtotal:number, expectedDiscount:number){await tx.$queryRaw`SELECT id FROM \"Promotion\" WHERE id = ${promotionId} FOR UPDATE`;const p=await tx.promotion.findUnique({where:{id:promotionId}});const now=new Date();if(!p||!p.isActive||p.startsAt>now||p.endsAt<now)throw new BadRequestException('Promotion is invalid or expired.');if(subtotal<p.minOrderAmount)throw new BadRequestException(`Minimum order for this promotion is ${p.minOrderAmount/100} NGN.`);if(p.usageLimit!==null&&p.usageCount>=p.usageLimit)throw new BadRequestException('Promotion usage limit reached.');if(p.perCustomerLimit){const used=await tx.order.count({where:{customerId,promotionId:p.id}});if(used>=p.perCustomerLimit)throw new BadRequestException('You have reached this promotion limit.');}let discount=p.type===PromotionType.PERCENTAGE?Math.floor(subtotal*p.value/100):p.value;if(p.maxDiscount!==null)discount=Math.min(discount,p.maxDiscount);discount=Math.min(discount,subtotal);if(discount!==expectedDiscount)throw new BadRequestException('Promotion changed during checkout. Please retry.');await tx.promotion.update({where:{id:p.id},data:{usageCount:{increment:1}}});return p;}"""
+          if old not in s: raise SystemExit('promotion validate anchor not found')
+          s=s.replace(old,new,1)
+          write(p,s)
+
+          p='backend/src/modules/orders/orders.service.ts'; s=read(p)
+          old="""    const promotion = dto.promotionCode
+      ? await this.promotionsService.validate(
+          dto.promotionCode,
+          customerId,
+          discountedMerchandiseSubtotal,
+        )
+      : null;"""
+          new="""    const promotion = dto.promotionCode
+      ? await this.promotionsService.validate(
+          dto.promotionCode,
+          customerId,
+          discountedMerchandiseSubtotal,
+          cart.vendorId!,
+        )
+      : null;"""
+          if old not in s: raise SystemExit('order promotion validation anchor not found')
+          s=s.replace(old,new,1)
+          old="""        async (tx) => {
+          if (
+            vendor.maxOrdersPerHour !="""
+          new="""        async (tx) => {
+          if (promotion) {
+            await this.promotionsService.consumePromotion(
+              tx,
+              promotion.id,
+              customerId,
+              discountedMerchandiseSubtotal,
+              promotion.discount,
+            );
+          }
+
+          if (
+            vendor.maxOrdersPerHour !="""
+          if old not in s: raise SystemExit('order transaction anchor not found')
+          s=s.replace(old,new,1)
+          write(p,s)
+          PY
+      - name: Validate full repository
+        run: |
+          cd backend
+          npm ci --no-audit --no-fund
+          npx prisma generate
+          npx prisma migrate deploy
+          npm run build
+          npm test -- --runInBand
+          npm run test:e2e -- --runInBand
+          cd ../apps/admin && npm ci --no-audit --no-fund && npm run build
+          cd ../customer && npm ci --no-audit --no-fund && npm run build
+          cd ../vendor && npm ci --no-audit --no-fund && npm run build
+          cd ../rider && npm ci --no-audit --no-fund && npm run build
+      - name: Commit validated batch 4
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git diff --check
+          git add backend/src/modules/promotions/promotions.service.ts backend/src/modules/orders/orders.service.ts .github/workflows/rozzifix-batch4.yml
+          if git diff --cached --quiet; then echo 'No batch 4 changes.'; else git commit -m 'fix: harden promotion checkout concurrency' && git pull --rebase origin codex/rozzifix-batch1 && git push; fi
