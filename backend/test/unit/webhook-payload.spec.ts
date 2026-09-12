@@ -38,7 +38,7 @@ describe('PaymentsService webhook boundary', () => {
       orderId: 'order-1',
     };
     const prisma = {
-      payment: { findUnique: jest.fn().mockResolvedValue(payment), update: jest.fn().mockResolvedValue({ ...payment, status: 'SUCCESS' }) },
+      payment: { findUnique: jest.fn().mockResolvedValue(payment), update: jest.fn().mockResolvedValue({ ...payment, status: 'SUCCESS' }), updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
       paymentEvent: { create: jest.fn().mockRejectedValue({ code: 'P2002' }) },
     };
     const ordersService = { confirmPayment: jest.fn().mockResolvedValue(undefined) };
@@ -52,7 +52,7 @@ describe('PaymentsService webhook boundary', () => {
       .resolves.toEqual({ received: true });
 
     expect(provider.verify).toHaveBeenCalledTimes(2);
-    expect(prisma.payment.update).toHaveBeenCalledTimes(1);
+    expect(prisma.payment.updateMany).toHaveBeenCalledTimes(1);
     expect(ordersService.confirmPayment).toHaveBeenCalledTimes(1);
     expect(eventEmitter.emit).toHaveBeenCalledTimes(1);
   });

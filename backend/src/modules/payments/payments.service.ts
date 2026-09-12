@@ -422,6 +422,8 @@ export class PaymentsService {
     // until their provider-side refund is confirmed.
     if (payment.provider === PaymentProviderName.WALLET) {
       const updated = await this.prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM "Refund" WHERE id = ${refund.id} FOR UPDATE`;
+
         const current = await tx.refund.findUnique({
           where: { id: refund.id },
         });
@@ -1039,19 +1041,18 @@ export class PaymentsService {
         );
       }
 
-      await this.prisma.payment.update({
-        where: {
-          id: payment.id,
-        },
+      const markedSuccessful = await this.prisma.payment.updateMany({
+        where: { id: payment.id, status: PaymentStatus.PENDING },
         data: {
           status: PaymentStatus.SUCCESS,
-          paidAt:
-            verification.paidAt ?? new Date(),
-          ...(providerTransactionId
-            ? { providerTransactionId }
-            : {}),
+          paidAt: verification.paidAt ?? new Date(),
+          ...(providerTransactionId ? { providerTransactionId } : {}),
         },
       });
+
+      if (markedSuccessful.count !== 1) {
+        return { status: PaymentStatus.SUCCESS };
+      }
 
       await this.ordersService.confirmPayment(
         payment.orderId,
@@ -1075,14 +1076,14 @@ export class PaymentsService {
       verification.status === 'failed' ||
       verification.status === 'abandoned'
     ) {
-      await this.prisma.payment.update({
-        where: {
-          id: payment.id,
-        },
-        data: {
-          status: PaymentStatus.FAILED,
-        },
+      const markedFailed = await this.prisma.payment.updateMany({
+        where: { id: payment.id, status: PaymentStatus.PENDING },
+        data: { status: PaymentStatus.FAILED },
       });
+
+      if (markedFailed.count !== 1) {
+        return { status: PaymentStatus.FAILED };
+      }
 
       await this.ordersService.markPaymentFailed(
         payment.orderId,

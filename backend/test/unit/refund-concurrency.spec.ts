@@ -149,7 +149,7 @@ describe('PaymentsService refund allocation concurrency', () => {
 
     await service.refundOrder('order-1', 'admin-1', 'wallet refund', 4000);
 
-    expect(tx.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(3);
     expect(tx.wallet.update).toHaveBeenCalledWith({
       where: { id: 'wallet-1' },
       data: { balance: { increment: 4000 } },

@@ -295,69 +295,64 @@ export class LedgerService {
   // creates the audit trail for it.
 
   async settleVendor(vendorId: string, actorId: string) {
-    const balance = await this.getVendorBalance(vendorId);
-    if (balance <= 0) {
-      throw new BadRequestException('This vendor has no pending balance to settle.');
-    }
-    const vendor = await this.prisma.vendor.findUnique({ where: { id: vendorId } });
-    if (!vendor) throw new NotFoundException('Vendor not found.');
-    const paymentAccount = await this.prisma.vendorPaymentAccount.findUnique({ where: { vendorId } });
-
-    const reference = `RZ-VP-${Date.now()}-${vendorId.slice(0, 8).toUpperCase()}`;
-    const entry = await this.record({
-      type: LedgerEntryType.PAYOUT,
-      accountType: LedgerAccountType.VENDOR,
-      accountId: vendorId,
-      amount: -balance,
-      description: `Settlement recorded by admin ${actorId} for ${vendor.storeName}`,
-      idempotencyKey: `payout:vendor:${reference}`,
+    const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`vendor-settlement:${vendorId}`}))`;
+      const grouped = await tx.ledgerEntry.aggregate({
+        where: { accountType: LedgerAccountType.VENDOR, accountId: vendorId },
+        _sum: { amount: true },
+      });
+      const balance = grouped._sum.amount ?? 0;
+      if (balance <= 0) throw new BadRequestException('This vendor has no pending balance to settle.');
+      const vendor = await tx.vendor.findUnique({ where: { id: vendorId } });
+      if (!vendor) throw new NotFoundException('Vendor not found.');
+      const paymentAccount = await tx.vendorPaymentAccount.findUnique({ where: { vendorId } });
+      const reference = `RZ-VP-${Date.now()}-${vendorId.slice(0, 8).toUpperCase()}`;
+      const entry = await tx.ledgerEntry.create({
+        data: {
+          type: LedgerEntryType.PAYOUT, accountType: LedgerAccountType.VENDOR, accountId: vendorId, amount: -balance,
+          description: `Settlement recorded by admin ${actorId} for ${vendor.storeName}`,
+          idempotencyKey: `payout:vendor:${reference}`,
+        },
+      });
+      await tx.vendorPayout.create({
+        data: { vendorId, amount: balance, status: 'PAID', reference, ledgerEntryId: entry.id, processedAt: new Date(), bankName: paymentAccount?.bankName, accountName: paymentAccount?.accountName, accountNumberLast4: paymentAccount?.accountNumberLast4 },
+      });
+      return { entry, balance };
     });
-    await this.prisma.vendorPayout.create({
-      data: { vendorId, amount: balance, status: 'PAID', reference, ledgerEntryId: entry.id,processedAt: new Date(), bankName: paymentAccount?.bankName, accountName: paymentAccount?.accountName, accountNumberLast4: paymentAccount?.accountNumberLast4 },
-    });
-    await this.auditLog.record({
-      actorId,
-      action: 'ledger.settle_vendor',
-      entityType: 'Vendor',
-      entityId: vendorId,
-      after: { amountSettled: balance },
-    });
-    return entry;
+    await this.auditLog.record({ actorId, action: 'ledger.settle_vendor', entityType: 'Vendor', entityId: vendorId, after: { amountSettled: result.balance } });
+    return result.entry;
   }
 
   async payRider(riderId: string, actorId: string) {
-    const balance = await this.getRiderBalance(riderId);
-    if (balance <= 0) {
-      throw new BadRequestException('This rider has no pending balance to pay out.');
-    }
-    const rider = await this.prisma.rider.findUnique({ where: { id: riderId } });
-    if (!rider) throw new NotFoundException('Rider not found.');
-
-    const riderProfile = await this.prisma.rider.findUnique({ where: { id: riderId } });
-    const reference = `RZ-RP-${Date.now()}-${riderId.slice(0, 8).toUpperCase()}`;
-    const entry = await this.record({
-      type: LedgerEntryType.PAYOUT,
-      accountType: LedgerAccountType.RIDER,
-      accountId: riderId,
-      amount: -balance,
-      description: `Payout recorded by admin ${actorId}`,
-      idempotencyKey: `payout:rider:${riderId}:${reference}`,
+    const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`rider-settlement:${riderId}`}))`;
+      const grouped = await tx.ledgerEntry.aggregate({
+        where: { accountType: LedgerAccountType.RIDER, accountId: riderId },
+        _sum: { amount: true },
+      });
+      const balance = grouped._sum.amount ?? 0;
+      if (balance <= 0) throw new BadRequestException('This rider has no pending balance to pay out.');
+      const rider = await tx.rider.findUnique({ where: { id: riderId } });
+      if (!rider) throw new NotFoundException('Rider not found.');
+      const reference = `RZ-RP-${Date.now()}-${riderId.slice(0, 8).toUpperCase()}`;
+      const entry = await tx.ledgerEntry.create({
+        data: {
+          type: LedgerEntryType.PAYOUT, accountType: LedgerAccountType.RIDER, accountId: riderId, amount: -balance,
+          description: `Payout recorded by admin ${actorId}`,
+          idempotencyKey: `payout:rider:${riderId}:${reference}`,
+        },
+      });
+      await tx.riderPayout.create({
+        data: {
+          riderId, amount: balance, status: 'PAID', reference, ledgerEntryId: entry.id, processedAt: new Date(),
+          bankName: rider.bankName, accountName: rider.bankAccountName,
+          accountNumberLast4: rider.bankAccountNumber ? rider.bankAccountNumber.slice(-4) : undefined,
+        },
+      });
+      return { entry, balance };
     });
-    await this.prisma.riderPayout.create({
-      data: {
-        riderId, amount: balance, status: 'PAID', reference, ledgerEntryId: entry.id, processedAt: new Date(),
-        bankName: riderProfile?.bankName, accountName: riderProfile?.bankAccountName,
-        accountNumberLast4: riderProfile?.bankAccountNumber ? riderProfile.bankAccountNumber.slice(-4) : undefined,
-      },
-    });
-    await this.auditLog.record({
-      actorId,
-      action: 'ledger.pay_rider',
-      entityType: 'Rider',
-      entityId: riderId,
-      after: { amountPaid: balance },
-    });
-    return entry;
+    await this.auditLog.record({ actorId, action: 'ledger.pay_rider', entityType: 'Rider', entityId: riderId, after: { amountPaid: result.balance } });
+    return result.entry;
   }
 
   async listEntriesForAccount(accountType: LedgerAccountType, accountId: string | null) {
