@@ -1,4 +1,4 @@
-import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
+import { BadRequestException, CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { SettingsAdminService } from '../../modules/settings/settings.service';
 
@@ -29,7 +29,7 @@ export class MarketplaceSettingsGuard implements CanActivate {
     if (method === 'POST' && path === '/api/orders/checkout') {
       const enabled = Boolean((await this.settings.get('ordersEnabled')).value);
       if (!enabled) {
-        throw new Error('Orders are currently disabled.');
+        throw new BadRequestException('Orders are currently disabled.');
       }
     }
 
@@ -44,7 +44,7 @@ export class MarketplaceSettingsGuard implements CanActivate {
       if (key) {
         const enabled = Boolean((await this.settings.get(key)).value);
         if (!enabled) {
-          throw new Error(`${role.toLowerCase()} registration is currently disabled.`);
+          throw new BadRequestException(`${role.toLowerCase()} registration is currently disabled.`);
         }
       }
     }
