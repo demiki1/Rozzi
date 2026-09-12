@@ -245,6 +245,14 @@ export class ProductsService {
     await this.getOwnedProduct(ownerUserId, productId);
 
     return this.prisma.$transaction(async (tx) => {
+      if (variantId) {
+        const variant = await tx.productVariant.findFirst({
+          where: { id: variantId, productId },
+          select: { id: true },
+        });
+        if (!variant) throw new NotFoundException('Variant not found for this product.');
+      }
+
       const inventory = variantId
         ? await tx.inventory.findUnique({ where: { variantId } })
         : await tx.inventory.findUnique({ where: { productId } });
