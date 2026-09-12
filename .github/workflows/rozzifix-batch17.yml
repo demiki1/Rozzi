@@ -36,7 +36,9 @@ jobs:
           cache: npm
           cache-dependency-path: backend/package-lock.json
       - name: Apply rider audit patch
-        run: python3 .github/patches/batch31.py
+        run: |
+          python3 .github/patches/batch31.py
+          python3 .github/patches/batch32.py
       - name: Validate backend
         run: |
           cd backend
