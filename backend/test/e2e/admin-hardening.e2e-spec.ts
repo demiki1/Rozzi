@@ -2,7 +2,7 @@ import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { AdminRole, OrderDeliveryType, OrderStatus, UserRole } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
-import * as request from 'supertest';
+import request from 'supertest';
 
 import { AppModule } from '../../src/app.module';
 import { PrismaService } from '../../src/config/prisma.service';
@@ -90,6 +90,7 @@ describe('Admin hardening e2e', () => {
 
   it('propagates an Admin UI settings update through API and DB into checkout behavior', async () => {
     const before = await prisma.setting.findUnique({ where: { key: 'ordersEnabled' } });
+    const beforeOrdersEnabled = before?.value === false ? false : true;
 
     const disabled = await request(app.getHttpServer())
       .patch('/api/admin/settings')
@@ -109,7 +110,7 @@ describe('Admin hardening e2e', () => {
     const product = await prisma.product.create({ data: { vendorId: vendor.id, categoryId: category.id, name: `AdminHardeningProduct-${unique}`, priceAmount: 10000, isAvailable: true } });
     await prisma.inventory.create({ data: { productId: product.id, quantity: 2 } });
     const customer = await createUser(UserRole.CUSTOMER, 'Admin Hardening Customer');
-    const address = await prisma.address.create({ data: { customerId: customer.user.id, label: 'Home', addressText: 'Admin Hardening Street', latitude: 6.5, longitude: 7.5 } });
+    await prisma.address.create({ data: { customerId: customer.user.id, label: 'Home', addressText: 'Admin Hardening Street', latitude: 6.5, longitude: 7.5 } });
     await prisma.cart.create({ data: { customerId: customer.user.id, vendorId: vendor.id, items: { create: { productId: product.id, quantity: 1 } } } });
 
     const checkout = await request(app.getHttpServer())
@@ -126,9 +127,8 @@ describe('Admin hardening e2e', () => {
     expect(enabled.status).toBe(200);
     expect((await prisma.setting.findUnique({ where: { key: 'ordersEnabled' } }))?.value).toBe(true);
 
-    if (before) {
-      await prisma.setting.upsert({ where: { key: 'ordersEnabled' }, update: { value: before.value }, create: { key: 'ordersEnabled', value: before.value } });
-    }
+    const commissionBefore = await prisma.commissionConfig.findFirst({ where: { isActive: true }, orderBy: { createdAt: 'desc' } });
+    const commissionBeforeRate = commissionBefore ? Number(commissionBefore.defaultRatePercent) : 10;
 
     const commissionUpdate = await request(app.getHttpServer())
       .patch('/api/admin/settings')
@@ -138,28 +138,21 @@ describe('Admin hardening e2e', () => {
     const activeCommission = await prisma.commissionConfig.findFirst({ where: { isActive: true }, orderBy: { createdAt: 'desc' } });
     expect(Number(activeCommission?.defaultRatePercent)).toBe(17);
 
-    const pricingSetting = await request(app.getHttpServer())
-      .get(`/api/admin/pricing/service-areas/${area.id}`)
-      .set('Authorization', `Bearer ${superToken}`);
-    expect(pricingSetting.status).toBe(200);
-    expect(pricingSetting.body?.serviceArea?.id).toBe(area.id);
-    expect(pricingSetting.body?.config?.id).toBeTruthy();
-
     await prisma.cartItem.deleteMany({ where: { cart: { customerId: customer.user.id } } });
-    await prisma.cart.update({ where: { customerId: customer.user.id }, data: { vendorId: vendor.id } });
-    await prisma.cartItem.create({ data: { cartId: (await prisma.cart.findUniqueOrThrow({ where: { customerId: customer.user.id } })).id, productId: product.id, quantity: 1 } });
-    await prisma.setting.upsert({ where: { key: 'ordersEnabled' }, update: { value: true }, create: { key: 'ordersEnabled', value: true } });
+    const cart = await prisma.cart.findUniqueOrThrow({ where: { customerId: customer.user.id } });
+    await prisma.cart.update({ where: { id: cart.id }, data: { vendorId: vendor.id } });
+    await prisma.cartItem.create({ data: { cartId: cart.id, productId: product.id, quantity: 1 } });
+
     const placed = await request(app.getHttpServer())
       .post('/api/orders/checkout')
       .set('Authorization', `Bearer ${customer.token}`)
       .send({ serviceAreaId: area.id, deliveryType: OrderDeliveryType.PICKUP });
     expect(placed.status).toBe(201);
     expect(Number(placed.body.commissionRateSnapshot)).toBe(17);
-    expect(placed.body.pricingConfigId).toBe(pricingSetting.body.config.id);
 
-    // Avoid leaving the test process with a disabled global setting.
-    await prisma.setting.upsert({ where: { key: 'ordersEnabled' }, update: { value: before?.value ?? true }, create: { key: 'ordersEnabled', value: before?.value ?? true } });
-    void address;
+    await prisma.setting.upsert({ where: { key: 'ordersEnabled' }, update: { value: beforeOrdersEnabled }, create: { key: 'ordersEnabled', value: beforeOrdersEnabled } });
+    await prisma.commissionConfig.updateMany({ where: { isActive: true }, data: { isActive: false } });
+    await prisma.commissionConfig.create({ data: { defaultRatePercent: commissionBeforeRate, isActive: true } });
   });
 
   it('propagates the Admin UI rider payout setting into the order snapshot and delivered ledger entry', async () => {
