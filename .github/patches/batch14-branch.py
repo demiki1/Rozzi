@@ -14,3 +14,14 @@ new3='''      const markedFailed = await this.prisma.payment.updateMany({\n     
 if old3 not in s: raise SystemExit('failed block not found')
 s=s.replace(old3,new3,1)
 p.write_text(s,encoding='utf-8')
+
+rp=Path('backend/test/unit/refund-concurrency.spec.ts')
+r=rp.read_text(encoding='utf-8-sig')
+r=r.replace("expect(tx.$queryRaw).toHaveBeenCalledTimes(2);", "expect(tx.$queryRaw).toHaveBeenCalledTimes(3);", 1)
+rp.write_text(r,encoding='utf-8')
+
+wp=Path('backend/test/unit/webhook-payload.spec.ts')
+w=wp.read_text(encoding='utf-8-sig')
+w=w.replace("payment: { findUnique: jest.fn().mockResolvedValue(payment), update: jest.fn().mockResolvedValue({ ...payment, status: 'SUCCESS' }) },", "payment: { findUnique: jest.fn().mockResolvedValue(payment), update: jest.fn().mockResolvedValue({ ...payment, status: 'SUCCESS' }), updateMany: jest.fn().mockResolvedValue({ count: 1 }) },")
+w=w.replace("expect(prisma.payment.update).toHaveBeenCalledTimes(1);", "expect(prisma.payment.updateMany).toHaveBeenCalledTimes(1);")
+wp.write_text(w,encoding='utf-8')
