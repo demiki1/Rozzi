@@ -24,7 +24,7 @@ replace_once(
 replace_once(
     'backend/src/modules/delivery/dispatch.service.ts',
     "    const rider = await this.getOwnedRider(\n      riderOwnerUserId,\n    );\n\n    const attempt = await this.getOwnedAttempt(\n      rider.id,\n      attemptId,\n    );",
-    "    const rider = await this.getOwnedRider(\n      riderOwnerUserId,\n    );\n\n    const eligibleStatuses: RiderStatus[] = [\n      RiderStatus.APPROVED,\n      RiderStatus.ACTIVE,\n    ];\n\n    if (!eligibleStatuses.includes(rider.status) || !rider.isOnline) {\n      throw new ForbiddenException(\n        'You must be an approved, online rider to accept a delivery.',\n      );\n    }\n\n    const attempt = await this.getOwnedAttempt(\n      rider.id,\n      attemptId,\n    );",
+    "    const rider = await this.getOwnedRider(\n      riderOwnerUserId,\n    );\n\n    const eligibleStatuses: RiderStatus[] = [\n      RiderStatus.APPROVED,\n      RiderStatus.ACTIVE,\n    ];\n\n    if (!eligibleStatuses.includes(rider.status as RiderStatus) || !rider.isOnline) {\n      throw new ForbiddenException(\n        'You must be an approved, online rider to accept a delivery.',\n      );\n    }\n\n    const attempt = await this.getOwnedAttempt(\n      rider.id,\n      attemptId,\n    );",
 )
 replace_once(
     'backend/src/modules/delivery/dispatch.service.ts',
