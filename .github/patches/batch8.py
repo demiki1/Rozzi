@@ -10,32 +10,9 @@ def write(path, text):
 
 path = 'backend/src/modules/payments/payments.service.ts'
 text = read(path)
-old = '''      const wallet = await tx.wallet.findUnique({
-        where: { customerId },
-      });
-
-      if (!wallet || !wallet.isActive) {
-        throw new BadRequestException('Wallet is unavailable.');
-      }
-
-      if (wallet.balance < order.totalAmount) {
-        throw new ConflictException('Insufficient wallet balance.');
-      }
-
-      const reference = `RZW-ORD-${order.orderNumber}-${uuidv4()}
-        .slice(0, 8)
-        .toUpperCase()}`;
-
-      const before = wallet.balance;
-      const after = before - order.totalAmount;
-
-      await tx.wallet.update({
-        where: { id: wallet.id },
-        data: {
-          balance: after,
-        },
-      });'''
-new = '''      const wallet = await tx.wallet.findUnique({
+start = text.index('      const wallet = await tx.wallet.findUnique', text.index('async payWithWallet'))
+end = text.index('      await tx.walletTransaction.create', start)
+replacement = '''      const wallet = await tx.wallet.findUnique({
         where: { customerId },
       });
 
@@ -70,47 +47,17 @@ new = '''      const wallet = await tx.wallet.findUnique({
         .toUpperCase()}`;
 
       const after = updatedWallet.balance;
-      const before = after + order.totalAmount;'''
-if old not in text:
-    raise SystemExit('wallet payment debit block anchor not found')
-text = text.replace(old, new, 1)
+      const before = after + order.totalAmount;
 
-old = '''    const result = await this.prisma.$transaction(
+'''
+text = text[:start] + replacement + text[end:]
+
+# In verifyTopUp, re-read the funding transaction inside the serializable
+# transaction so a stale request cannot credit an already-successful top-up.
+start = text.index('    const result = await this.prisma.$transaction(')
+end = text.index('\n\n    return {\n      success: true,\n      balance: result.balanceAfter,', start)
+replacement = '''    const result = await this.prisma.$transaction(
       async (tx) => {
-        const wallet = await tx.wallet.findUnique({
-          where: { id: transaction.walletId },
-        });
-
-        if (!wallet) {
-          throw new NotFoundException('Wallet not found.');
-        }
-
-        const before = wallet.balance;
-        const after = before + transaction.amount;
-
-        await tx.wallet.update({
-          where: { id: wallet.id },
-          data: { balance: after },
-        });
-
-        return tx.walletTransaction.update({
-          where: { id: transaction.id },
-          data: {
-            status: 'SUCCESS',
-            balanceBefore: before,
-            balanceAfter: after,
-          },
-        });
-      },
-      {
-        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-      },
-    );'''
-new = '''    const result = await this.prisma.$transaction(
-      async (tx) => {
-        // Re-read the funding transaction inside the serializable transaction.
-        // The request-level read can be stale when two verification requests
-        // started concurrently.
         const current = await tx.walletTransaction.findUnique({
           where: { id: transaction.id },
         });
@@ -156,9 +103,7 @@ new = '''    const result = await this.prisma.$transaction(
         isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
       },
     );'''
-if old not in text:
-    raise SystemExit('wallet top-up transaction anchor not found')
-text = text.replace(old, new, 1)
+text = text[:start] + replacement + text[end:]
 write(path, text)
 
 Path('backend/test/unit/wallet-money-concurrency.spec.ts').write_text(r'''import { ConflictException } from '@nestjs/common';
