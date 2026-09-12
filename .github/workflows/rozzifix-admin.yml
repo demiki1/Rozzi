@@ -35,6 +35,8 @@ jobs:
       CORS_ORIGIN: http://localhost:3001,http://localhost:3002,http://localhost:3003,http://localhost:3004
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: codex/rozzifix-batch1
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -85,4 +87,4 @@ jobs:
             git commit -m 'fix: complete admin checkout hardening [skip ci]'
             git push origin HEAD:codex/rozzifix-batch1
           fi
-      # Keep the Admin validation tied to the exact branch tree, not a stale PR merge snapshot.
+      # Keep Admin PR validation tied to the exact branch tree rather than a generated merge snapshot.
