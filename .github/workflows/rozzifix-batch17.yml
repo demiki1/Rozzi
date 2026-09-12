@@ -51,7 +51,7 @@ jobs:
           npm run test:e2e -- --runInBand
       - name: Validate frontends
         run: |
-          cd apps/admin && npm ci --no-audit --no-fund && npm run build
-          cd ../customer && npm ci --no-audit --no-fund && npm run build
-          cd ../vendor && npm ci --no-audit --no-fund && npm run build
-          cd ../rider && npm ci --no-audit --no-fund && npm run build
+          cd apps/admin && npm ci --no-audit --no-fund && NODE_ENV=production npm run build
+          cd ../customer && npm ci --no-audit --no-fund && NODE_ENV=production npm run build
+          cd ../vendor && npm ci --no-audit --no-fund && NODE_ENV=production npm run build
+          cd ../rider && npm ci --no-audit --no-fund && NODE_ENV=production npm run build
