@@ -24,9 +24,10 @@ jobs:
         options: >-
           --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
     env:
-      NODE_ENV: test
+      NODE_ENV: development
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/marketplace_test
       JWT_ACCESS_SECRET: rozzi-ci-access-secret
+      JWT_REFRESH_SECRET: rozzi-ci-refresh-secret
       CORS_ORIGIN: http://localhost:3001,http://localhost:3002,http://localhost:3003,http://localhost:3004
     steps:
       - uses: actions/checkout@v4
@@ -54,4 +55,3 @@ jobs:
           cd ../customer && npm ci --no-audit --no-fund && npm run build
           cd ../vendor && npm ci --no-audit --no-fund && npm run build
           cd ../rider && npm ci --no-audit --no-fund && npm run build
-      # Final rider hardening validation run after concurrency fixes.
