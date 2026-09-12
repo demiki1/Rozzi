@@ -5,7 +5,7 @@ import { AuditLogService } from '../audit/audit-log.service';
 import { PAYMENT_SUCCEEDED_EVENT, PaymentSucceededPayload } from '../payments/payment-events';
 import { REFUND_PROCESSED_EVENT, RefundProcessedPayload } from '../payments/refund-events';
 import { ORDER_TRANSITIONED_EVENT, OrderTransitionedPayload } from '../orders/order-events';
-import { LedgerAccountType, LedgerEntryType, OrderStatus } from '@prisma/client';
+import { LedgerAccountType, LedgerEntryType, OrderStatus, Prisma } from '@prisma/client';
 
 @Injectable()
 export class LedgerService {
@@ -28,17 +28,38 @@ export class LedgerService {
     description?: string;
     idempotencyKey?: string | null;
   }) {
-    return this.prisma.ledgerEntry.create({
-      data: {
-        type: params.type,
-        accountType: params.accountType,
-        accountId: params.accountId ?? null,
-        orderId: params.orderId ?? null,
-        amount: params.amount,
-        description: params.description,
-        idempotencyKey: params.idempotencyKey ?? null,
-      },
-    });
+    if (params.idempotencyKey) {
+      const existing = await this.prisma.ledgerEntry.findFirst({
+        where: { idempotencyKey: params.idempotencyKey },
+      });
+      if (existing) return existing;
+    }
+
+    try {
+      return await this.prisma.ledgerEntry.create({
+        data: {
+          type: params.type,
+          accountType: params.accountType,
+          accountId: params.accountId ?? null,
+          orderId: params.orderId ?? null,
+          amount: params.amount,
+          description: params.description,
+          idempotencyKey: params.idempotencyKey ?? null,
+        },
+      });
+    } catch (error) {
+      if (
+        params.idempotencyKey &&
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        const existing = await this.prisma.ledgerEntry.findFirst({
+          where: { idempotencyKey: params.idempotencyKey },
+        });
+        if (existing) return existing;
+      }
+      throw error;
+    }
   }
 
   // ---- Event-driven booking ----
@@ -73,18 +94,6 @@ export class LedgerService {
   async onOrderTransitioned(payload: OrderTransitionedPayload) {
     if (payload.toStatus !== OrderStatus.DELIVERED) return;
 
-    // Idempotency: if this order has already been booked (e.g. a
-    // transition somehow fires twice), don't double-book. Checked by
-    // looking for an existing VENDOR_EARNING entry for this order rather
-    // than trusting the caller to only call this once.
-    const alreadyBooked = await this.prisma.ledgerEntry.findFirst({
-      where: { orderId: payload.orderId, type: LedgerEntryType.VENDOR_EARNING },
-    });
-    if (alreadyBooked) {
-      this.logger.warn(`Order ${payload.orderId} already has a VENDOR_EARNING entry â€” skipping re-booking.`);
-      return;
-    }
-
     const order = await this.prisma.order.findUnique({
       where: { id: payload.orderId },
       include: {
@@ -96,6 +105,8 @@ export class LedgerService {
             commissionAmountSnapshot: true,
           },
         },
+        pricingConfig: { select: { riderPayoutRatePercent: true } },
+        promotion: { select: { vendorId: true } },
       },
     });
     if (!order) {
@@ -107,18 +118,13 @@ export class LedgerService {
     // created at checkout. This preserves the exact vendor/category/global
     // rate that applied to each item and keeps delivery/service fees outside
     // the vendor commission base.
-    const commissionAmount = order.items.reduce(
-      (sum, item) => sum + item.commissionAmountSnapshot,
-      0,
-    );
-    const commissionableMerchandise = order.items.reduce(
-      (sum, item) => sum + item.subtotalAmount,
-      0,
-    );
-    const vendorEarning = Math.max(
-      0,
-      commissionableMerchandise - commissionAmount,
-    );
+    const commissionableMerchandise = order.items.reduce((sum, item) => sum + item.subtotalAmount, 0);
+    const promotionDiscount = Math.min(Math.max(0, order.discountAmount), commissionableMerchandise);
+    const vendorFundedPromotion = Boolean(order.promotionId && order.promotion?.vendorId);
+    const netCommissionBase = vendorFundedPromotion ? Math.max(0, commissionableMerchandise - promotionDiscount) : commissionableMerchandise;
+    const grossCommission = order.items.reduce((sum, item) => sum + item.commissionAmountSnapshot, 0);
+    const commissionAmount = vendorFundedPromotion && commissionableMerchandise > 0 ? Math.min(grossCommission, Math.round(grossCommission * netCommissionBase / commissionableMerchandise)) : grossCommission;
+    const vendorEarning = Math.max(0, netCommissionBase - commissionAmount);
 
     await this.record({
       type: LedgerEntryType.VENDOR_EARNING,
@@ -139,23 +145,21 @@ export class LedgerService {
       idempotencyKey: `order:${order.id}:platform-commission`,
     });
 
-    // Rider payout: only for platform-delivered orders with an assigned
-    // rider. KNOWN SIMPLIFICATION, flagged: the rider gets the FULL
-    // delivery fee â€” there's no admin-configurable split (e.g. platform
-    // keeps a cut of the delivery fee too) because Â§18/Â§78 don't specify
-    // one concretely enough to hard-code a number. If you want the
-    // platform to retain a portion of the delivery fee, this is the one
-    // place that changes.
-    if (order.delivery?.riderId) {
-      await this.record({
-        type: LedgerEntryType.RIDER_EARNING,
-        accountType: LedgerAccountType.RIDER,
-        accountId: order.delivery.riderId,
-        orderId: order.id,
-        amount: order.deliveryFeeAmount,
-        description: `Delivery payout for order ${order.orderNumber}`,
-        idempotencyKey: `order:${order.id}:rider-earning`,
-      });
+    if (promotionDiscount > 0 && !vendorFundedPromotion) {
+      await this.record({ type: LedgerEntryType.PROMOTION, accountType: LedgerAccountType.PLATFORM, orderId: order.id, amount: -promotionDiscount, description: `ROZZI-funded promotion for order ${order.orderNumber}`, idempotencyKey: `order:${order.id}:promotion-expense` });
+    }
+
+    const riderPayoutRate = Math.min(100, Math.max(0, Number(order.riderPayoutRateSnapshot ?? order.pricingConfig?.riderPayoutRatePercent ?? 92)));
+
+    if (order.riderPayoutRateSnapshot == null) {
+      await this.prisma.order.update({ where: { id: order.id }, data: { riderPayoutRateSnapshot: riderPayoutRate } });
+    }
+
+    if (order.delivery?.riderId && order.deliveryFeeAmount > 0) {
+      const riderEarning = Math.round(order.deliveryFeeAmount * riderPayoutRate / 100);
+      const rozziDeliveryShare = order.deliveryFeeAmount - riderEarning;
+      await this.record({ type: LedgerEntryType.RIDER_EARNING, accountType: LedgerAccountType.RIDER, accountId: order.delivery.riderId, orderId: order.id, amount: riderEarning, description: `Delivery payout (${riderPayoutRate}% rider) for order ${order.orderNumber}`, idempotencyKey: `order:${order.id}:rider-earning` });
+      if (rozziDeliveryShare > 0) await this.record({ type: LedgerEntryType.PLATFORM_COMMISSION, accountType: LedgerAccountType.PLATFORM, orderId: order.id, amount: rozziDeliveryShare, description: `Delivery revenue (${100 - riderPayoutRate}% ROZZI) for order ${order.orderNumber}`, idempotencyKey: `order:${order.id}:delivery-platform-share` });
     }
 
     // Service fee (Â§61 lists it as its own revenue line) is booked as a
@@ -176,10 +180,6 @@ export class LedgerService {
 
   @OnEvent(REFUND_PROCESSED_EVENT)
   async onRefundProcessed(payload: RefundProcessedPayload) {
-    const existing = await this.prisma.ledgerEntry.findFirst({
-      where: { orderId: payload.orderId, type: LedgerEntryType.REFUND, description: { contains: payload.refundId } },
-    });
-    if (existing) return;
     const refundAmount = Math.abs(payload.amountKobo);
     await this.record({
       type: LedgerEntryType.REFUND,
@@ -205,28 +205,31 @@ export class LedgerService {
             commissionAmountSnapshot: true,
           },
         },
+        pricingConfig: { select: { riderPayoutRatePercent: true } },
+        promotion: { select: { vendorId: true } },
       },
     });
     if (!order) return;
-    const commission = order.items.reduce(
-      (sum, item) => sum + item.commissionAmountSnapshot,
-      0,
-    );
-    const commissionableMerchandise = order.items.reduce(
-      (sum, item) => sum + item.subtotalAmount,
-      0,
-    );
-    const vendorEarning = Math.max(
-      0,
-      commissionableMerchandise - commission,
-    );
+    const commissionableMerchandise = order.items.reduce((sum, item) => sum + item.subtotalAmount, 0);
+    const promotionDiscount = Math.min(Math.max(0, order.discountAmount), commissionableMerchandise);
+    const vendorFundedPromotion = Boolean(order.promotionId && order.promotion?.vendorId);
+    const netCommissionBase = vendorFundedPromotion ? Math.max(0, commissionableMerchandise - promotionDiscount) : commissionableMerchandise;
+    const grossCommission = order.items.reduce((sum, item) => sum + item.commissionAmountSnapshot, 0);
+    const commission = vendorFundedPromotion && commissionableMerchandise > 0 ? Math.min(grossCommission, Math.round(grossCommission * netCommissionBase / commissionableMerchandise)) : grossCommission;
+    const vendorEarning = Math.max(0, netCommissionBase - commission);
     const base = Math.max(1, order.totalAmount);
     const vendorReversal = Math.min(vendorEarning, Math.round(refundAmount * vendorEarning /base));
     const commissionReversal = Math.min(commission + order.serviceFeeAmount, Math.max(0, refundAmount - vendorReversal));
-    const riderReversal = order.delivery?.riderId ? Math.min(order.deliveryFeeAmount, Math.max(0, refundAmount - vendorReversal - commissionReversal)) : 0;
+    const riderRate = Math.min(100, Math.max(0, Number(order.riderPayoutRateSnapshot ?? order.pricingConfig?.riderPayoutRatePercent ?? 92)));
+    const riderEarned = Math.round(order.deliveryFeeAmount * riderRate / 100);
+    const riderReversal = order.delivery?.riderId ? Math.min(riderEarned, Math.max(0, refundAmount - vendorReversal - commissionReversal)) : 0;
 
     if (vendorReversal > 0) await this.record({ type: LedgerEntryType.VENDOR_EARNING, accountType: LedgerAccountType.VENDOR, accountId: order.vendorId, orderId: order.id, amount: -vendorReversal, description: `Vendor earning reversal for refund ${payload.refundId}`, idempotencyKey: `refund:${payload.refundId}:vendor` });
     if (commissionReversal > 0) await this.record({ type: LedgerEntryType.PLATFORM_COMMISSION, accountType: LedgerAccountType.PLATFORM, orderId: order.id, amount: -commissionReversal, description: `Platform revenue reversal for refund ${payload.refundId}`, idempotencyKey: `refund:${payload.refundId}:platform-revenue` });
+    if (promotionDiscount > 0 && !vendorFundedPromotion) {
+      const promotionReversal = Math.min(promotionDiscount, Math.max(0, Math.round(refundAmount * promotionDiscount / Math.max(1, order.totalAmount))));
+      if (promotionReversal > 0) await this.record({ type: LedgerEntryType.PROMOTION, accountType: LedgerAccountType.PLATFORM, orderId: order.id, amount: promotionReversal, description: `ROZZI promotion expense reversal for refund ${payload.refundId}`, idempotencyKey: `refund:${payload.refundId}:promotion` });
+    }
     if (riderReversal > 0 && order.delivery?.riderId) await this.record({ type: LedgerEntryType.RIDER_EARNING, accountType: LedgerAccountType.RIDER, accountId: order.delivery.riderId, orderId: order.id, amount: -riderReversal, description: `Rider earning reversal for refund ${payload.refundId}`, idempotencyKey: `refund:${payload.refundId}:rider` });
   }
 
@@ -297,69 +300,64 @@ export class LedgerService {
   // creates the audit trail for it.
 
   async settleVendor(vendorId: string, actorId: string) {
-    const balance = await this.getVendorBalance(vendorId);
-    if (balance <= 0) {
-      throw new BadRequestException('This vendor has no pending balance to settle.');
-    }
-    const vendor = await this.prisma.vendor.findUnique({ where: { id: vendorId } });
-    if (!vendor) throw new NotFoundException('Vendor not found.');
-    const paymentAccount = await this.prisma.vendorPaymentAccount.findUnique({ where: { vendorId } });
-
-    const reference = `RZ-VP-${Date.now()}-${vendorId.slice(0, 8).toUpperCase()}`;
-    const entry = await this.record({
-      type: LedgerEntryType.PAYOUT,
-      accountType: LedgerAccountType.VENDOR,
-      accountId: vendorId,
-      amount: -balance,
-      description: `Settlement recorded by admin ${actorId} for ${vendor.storeName}`,
-      idempotencyKey: `payout:vendor:${reference}`,
+    const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`vendor-settlement:${vendorId}`}))`;
+      const grouped = await tx.ledgerEntry.aggregate({
+        where: { accountType: LedgerAccountType.VENDOR, accountId: vendorId },
+        _sum: { amount: true },
+      });
+      const balance = grouped._sum.amount ?? 0;
+      if (balance <= 0) throw new BadRequestException('This vendor has no pending balance to settle.');
+      const vendor = await tx.vendor.findUnique({ where: { id: vendorId } });
+      if (!vendor) throw new NotFoundException('Vendor not found.');
+      const paymentAccount = await tx.vendorPaymentAccount.findUnique({ where: { vendorId } });
+      const reference = `RZ-VP-${Date.now()}-${vendorId.slice(0, 8).toUpperCase()}`;
+      const entry = await tx.ledgerEntry.create({
+        data: {
+          type: LedgerEntryType.PAYOUT, accountType: LedgerAccountType.VENDOR, accountId: vendorId, amount: -balance,
+          description: `Settlement recorded by admin ${actorId} for ${vendor.storeName}`,
+          idempotencyKey: `payout:vendor:${reference}`,
+        },
+      });
+      await tx.vendorPayout.create({
+        data: { vendorId, amount: balance, status: 'PAID', reference, ledgerEntryId: entry.id, processedAt: new Date(), bankName: paymentAccount?.bankName, accountName: paymentAccount?.accountName, accountNumberLast4: paymentAccount?.accountNumberLast4 },
+      });
+      return { entry, balance };
     });
-    await this.prisma.vendorPayout.create({
-      data: { vendorId, amount: balance, status: 'PAID', reference, ledgerEntryId: entry.id,processedAt: new Date(), bankName: paymentAccount?.bankName, accountName: paymentAccount?.accountName, accountNumberLast4: paymentAccount?.accountNumberLast4 },
-    });
-    await this.auditLog.record({
-      actorId,
-      action: 'ledger.settle_vendor',
-      entityType: 'Vendor',
-      entityId: vendorId,
-      after: { amountSettled: balance },
-    });
-    return entry;
+    await this.auditLog.record({ actorId, action: 'ledger.settle_vendor', entityType: 'Vendor', entityId: vendorId, after: { amountSettled: result.balance } });
+    return result.entry;
   }
 
   async payRider(riderId: string, actorId: string) {
-    const balance = await this.getRiderBalance(riderId);
-    if (balance <= 0) {
-      throw new BadRequestException('This rider has no pending balance to pay out.');
-    }
-    const rider = await this.prisma.rider.findUnique({ where: { id: riderId } });
-    if (!rider) throw new NotFoundException('Rider not found.');
-
-    const riderProfile = await this.prisma.rider.findUnique({ where: { id: riderId } });
-    const reference = `RZ-RP-${Date.now()}-${riderId.slice(0, 8).toUpperCase()}`;
-    const entry = await this.record({
-      type: LedgerEntryType.PAYOUT,
-      accountType: LedgerAccountType.RIDER,
-      accountId: riderId,
-      amount: -balance,
-      description: `Payout recorded by admin ${actorId}`,
-      idempotencyKey: `payout:rider:${riderId}:${reference}`,
+    const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`rider-settlement:${riderId}`}))`;
+      const grouped = await tx.ledgerEntry.aggregate({
+        where: { accountType: LedgerAccountType.RIDER, accountId: riderId },
+        _sum: { amount: true },
+      });
+      const balance = grouped._sum.amount ?? 0;
+      if (balance <= 0) throw new BadRequestException('This rider has no pending balance to pay out.');
+      const rider = await tx.rider.findUnique({ where: { id: riderId } });
+      if (!rider) throw new NotFoundException('Rider not found.');
+      const reference = `RZ-RP-${Date.now()}-${riderId.slice(0, 8).toUpperCase()}`;
+      const entry = await tx.ledgerEntry.create({
+        data: {
+          type: LedgerEntryType.PAYOUT, accountType: LedgerAccountType.RIDER, accountId: riderId, amount: -balance,
+          description: `Payout recorded by admin ${actorId}`,
+          idempotencyKey: `payout:rider:${riderId}:${reference}`,
+        },
+      });
+      await tx.riderPayout.create({
+        data: {
+          riderId, amount: balance, status: 'PAID', reference, ledgerEntryId: entry.id, processedAt: new Date(),
+          bankName: rider.bankName, accountName: rider.bankAccountName,
+          accountNumberLast4: rider.bankAccountNumber ? rider.bankAccountNumber.slice(-4) : undefined,
+        },
+      });
+      return { entry, balance };
     });
-    await this.prisma.riderPayout.create({
-      data: {
-        riderId, amount: balance, status: 'PAID', reference, ledgerEntryId: entry.id, processedAt: new Date(),
-        bankName: riderProfile?.bankName, accountName: riderProfile?.bankAccountName,
-        accountNumberLast4: riderProfile?.bankAccountNumber ? riderProfile.bankAccountNumber.slice(-4) : undefined,
-      },
-    });
-    await this.auditLog.record({
-      actorId,
-      action: 'ledger.pay_rider',
-      entityType: 'Rider',
-      entityId: riderId,
-      after: { amountPaid: balance },
-    });
-    return entry;
+    await this.auditLog.record({ actorId, action: 'ledger.pay_rider', entityType: 'Rider', entityId: riderId, after: { amountPaid: result.balance } });
+    return result.entry;
   }
 
   async listEntriesForAccount(accountType: LedgerAccountType, accountId: string | null) {

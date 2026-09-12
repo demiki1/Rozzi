@@ -96,20 +96,37 @@ export class PaymentsService {
       }/payments/callback?reference=${encodeURIComponent(reference)}`,
     });
 
-    await this.prisma.payment.create({
-      data: {
-        orderId: order.id,
-        provider: provider.name as PaymentProviderName,
-        reference: result.reference,
-        amount: order.totalAmount,
-        status: PaymentStatus.PENDING,
-        authorizationUrl: result.authorizationUrl,
-      },
+    const persisted = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`
+        SELECT id FROM "orders" WHERE id = ${orderId} FOR UPDATE
+      `;
+      const currentOrder = await tx.order.findUnique({ where: { id: orderId } });
+      if (!currentOrder || currentOrder.customerId !== customerId) {
+        throw new NotFoundException('Order not found.');
+      }
+      if (currentOrder.status !== OrderStatus.PENDING_PAYMENT) {
+        throw new BadRequestException('This order is not awaiting payment.');
+      }
+      const currentPending = await tx.payment.findFirst({
+        where: { orderId, status: PaymentStatus.PENDING },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (currentPending?.authorizationUrl) return currentPending;
+      return tx.payment.create({
+        data: {
+          orderId: currentOrder.id,
+          provider: provider.name as PaymentProviderName,
+          reference: result.reference,
+          amount: currentOrder.totalAmount,
+          status: PaymentStatus.PENDING,
+          authorizationUrl: result.authorizationUrl,
+        },
+      });
     });
 
     return {
-      authorizationUrl: result.authorizationUrl,
-      reference: result.reference,
+      authorizationUrl: persisted.authorizationUrl ?? result.authorizationUrl,
+      reference: persisted.reference,
     };
   }
 
@@ -119,6 +136,10 @@ export class PaymentsService {
   // same payment lifecycle as Paystack/Flutterwave.
   async payWithWallet(customerId: string, orderId: string) {
     const result = await this.prisma.$transaction(async (tx) => {
+      // Serialize wallet payments for the same order so two concurrent
+      // requests cannot both observe an unpaid order and debit the wallet twice.
+      await tx.$queryRaw`SELECT id FROM "orders" WHERE id = ${orderId} FOR UPDATE`;
+
       const order = await tx.order.findUnique({
         where: { id: orderId },
       });
@@ -159,23 +180,34 @@ export class PaymentsService {
         throw new BadRequestException('Wallet is unavailable.');
       }
 
-      if (wallet.balance < order.totalAmount) {
+      // Make the balance reservation atomic. Two concurrent order payments
+      // cannot both spend the same observed wallet balance.
+      const debited = await tx.wallet.updateMany({
+        where: {
+          id: wallet.id,
+          isActive: true,
+          balance: { gte: order.totalAmount },
+        },
+        data: {
+          balance: { decrement: order.totalAmount },
+        },
+      });
+
+      if (debited.count !== 1) {
         throw new ConflictException('Insufficient wallet balance.');
       }
 
-      const reference = `RZW-ORD-${order.orderNumber}-${uuidv4()
+      const updatedWallet = await tx.wallet.findUniqueOrThrow({
+        where: { id: wallet.id },
+        select: { balance: true },
+      });
+
+      const reference = `RZW-ORD-${order.orderNumber}-${uuidv4()}
         .slice(0, 8)
         .toUpperCase()}`;
 
-      const before = wallet.balance;
-      const after = before - order.totalAmount;
-
-      await tx.wallet.update({
-        where: { id: wallet.id },
-        data: {
-          balance: after,
-        },
-      });
+      const after = updatedWallet.balance;
+      const before = after + order.totalAmount;
 
       await tx.walletTransaction.create({
         data: {
@@ -345,62 +377,79 @@ export class PaymentsService {
       );
     }
 
-    // Never allow cumulative successful/pending refunds to exceed the payment.
-    const refundedTotals = await this.prisma.refund.aggregate({
-      where: {
-        paymentId: payment.id,
-        status: {
-          in: ['REQUESTED', 'PROCESSING', 'PROCESSED'],
+    // Serialize refund allocation on the payment row. Without a row lock, two
+    // concurrent admin requests can both observe the same remaining balance
+    // and create refunds whose combined amount exceeds the original payment.
+    // The lock also makes the pending-refund check atomic with allocation.
+    const allocation = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`
+        SELECT id FROM "payments" WHERE id = ${payment.id} FOR UPDATE
+      `;
+
+      // Never allow cumulative successful/pending refunds to exceed the payment.
+      const refundedTotals = await tx.refund.aggregate({
+        where: {
+          paymentId: payment.id,
+          status: {
+            in: ['REQUESTED', 'PROCESSING', 'PROCESSED'],
+          },
         },
-      },
-      _sum: {
-        amount: true,
-      },
-    });
-
-    const alreadyAllocated = refundedTotals._sum.amount ?? 0;
-    const remaining = payment.amount - alreadyAllocated;
-
-    if (refundAmount > remaining) {
-      throw new BadRequestException(
-        `Refund amount exceeds the remaining refundable balance of ${remaining} kobo.`,
-      );
-    }
-
-    // A pending provider refund must settle before another refund attempt is
-    // created; otherwise a retry could double-submit money to the provider.
-    const existing = await this.prisma.refund.findFirst({
-      where: {
-        paymentId: payment.id,
-        status: {
-          in: ['REQUESTED', 'PROCESSING'],
+        _sum: {
+          amount: true,
         },
-      },
-      orderBy: {
-        createdAt: 'desc',
-      },
+      });
+
+      const alreadyAllocated = refundedTotals._sum.amount ?? 0;
+      const remaining = payment.amount - alreadyAllocated;
+
+      if (refundAmount > remaining) {
+        throw new BadRequestException(
+          `Refund amount exceeds the remaining refundable balance of ${remaining} kobo.`,
+        );
+      }
+
+      // A pending provider refund must settle before another refund attempt is
+      // created; otherwise a retry could double-submit money to the provider.
+      const existing = await tx.refund.findFirst({
+        where: {
+          paymentId: payment.id,
+          status: {
+            in: ['REQUESTED', 'PROCESSING'],
+          },
+        },
+        orderBy: {
+          createdAt: 'desc',
+        },
+      });
+
+      if (existing) {
+        return { refund: existing, created: false };
+      }
+
+      return { refund: await tx.refund.create({
+        data: {
+          paymentId: payment.id,
+          orderId,
+          amount: refundAmount,
+          reason,
+          requestedByUserId: actorId,
+          status: 'PROCESSING',
+        },
+      }), created: true };
     });
 
-    if (existing) {
-      return existing;
+    const refund = allocation.refund;
+    if (!allocation.created && payment.provider !== PaymentProviderName.WALLET) {
+      return refund;
     }
-
-    const refund = await this.prisma.refund.create({
-      data: {
-        paymentId: payment.id,
-        orderId,
-        amount: refundAmount,
-        reason,
-        requestedByUserId: actorId,
-        status: 'PROCESSING',
-      },
-    });
 
     // Wallet payments are refunded internally: credit the customer's wallet
     // atomically with the refund record. External providers remain pending
     // until their provider-side refund is confirmed.
     if (payment.provider === PaymentProviderName.WALLET) {
       const updated = await this.prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM "refunds" WHERE id = ${refund.id} FOR UPDATE`;
+
         const current = await tx.refund.findUnique({
           where: { id: refund.id },
         });
@@ -421,15 +470,34 @@ export class PaymentsService {
           );
         }
 
-        const before = wallet.balance;
-        const after = before + refundAmount;
+        // Serialize wallet refund balance accounting with concurrent wallet
+        // spends/refunds. The existing payment/refund allocation lock protects
+        // refund duplication; this wallet-row lock protects the wallet ledger
+        // from stale absolute-balance writes.
+        await tx.$queryRaw`
+          SELECT id FROM "wallets" WHERE id = ${wallet.id} FOR UPDATE
+        `;
 
-        await tx.wallet.update({
+        const currentWallet = await tx.wallet.findUnique({
+          where: { id: wallet.id },
+          select: { balance: true },
+        });
+
+        if (!currentWallet) {
+          throw new BadRequestException(
+            'Customer wallet is unavailable for refund.',
+          );
+        }
+
+        const before = currentWallet.balance;
+        const updatedWallet = await tx.wallet.update({
           where: { id: wallet.id },
           data: {
-            balance: after,
+            balance: { increment: refundAmount },
           },
+          select: { balance: true },
         });
+        const after = updatedWallet.balance;
 
         await tx.walletTransaction.create({
           data: {
@@ -598,7 +666,18 @@ export class PaymentsService {
   async verifyByReference(
     reference: string,
     providerTransactionId?: string,
+    customerId?: string,
   ) {
+    const payment = await this.prisma.payment.findUnique({
+      where: { reference },
+      select: {
+        order: { select: { customerId: true } },
+      },
+    });
+
+    if (!payment || (customerId && payment.order.customerId !== customerId)) {
+      throw new NotFoundException('Payment not found.');
+    }
     return this.processVerification(
       reference,
       'manual_verify',
@@ -856,10 +935,10 @@ export class PaymentsService {
 
     if (verification.status === 'success') {
       if (
-        verification.amountKobo < payment.amount
+        verification.amountKobo !== payment.amount
       ) {
         throw new ConflictException(
-          'Flutterwave payment amount is below the expected order total.',
+          'Flutterwave payment amount does not match the expected order total.',
         );
       }
 
@@ -927,9 +1006,10 @@ export class PaymentsService {
       };
     }
 
-    // Idempotency: if we've already recorded this exact (provider,
-    // reference, eventType) combination, do nothing further. A duplicate
-    // webhook delivery must never double-process a payment (§70).
+    // Record the event for audit/idempotency, but do not treat a duplicate
+    // event row as proof that verification succeeded. If the first delivery
+    // recorded the event and then provider verification failed or timed out,
+    // the provider may retry the same event and we must be able to verify it.
     try {
       await this.prisma.paymentEvent.create({
         data: {
@@ -941,17 +1021,13 @@ export class PaymentsService {
         },
       });
     } catch (err: any) {
-      if (err.code === 'P2002') {
-        this.logger.log(
-          `Duplicate payment event ignored: ${reference} / ${eventType}`,
-        );
-
-        return {
-          status: 'already_processed',
-        };
+      if (err.code !== 'P2002') {
+        throw err;
       }
 
-      throw err;
+      this.logger.log(
+        `Duplicate payment event received: ${reference} / ${eventType}; retrying verification if still pending.`,
+      );
     }
 
     if (payment.status !== PaymentStatus.PENDING) {
@@ -991,19 +1067,18 @@ export class PaymentsService {
         );
       }
 
-      await this.prisma.payment.update({
-        where: {
-          id: payment.id,
-        },
+      const markedSuccessful = await this.prisma.payment.updateMany({
+        where: { id: payment.id, status: PaymentStatus.PENDING },
         data: {
           status: PaymentStatus.SUCCESS,
-          paidAt:
-            verification.paidAt ?? new Date(),
-          ...(providerTransactionId
-            ? { providerTransactionId }
-            : {}),
+          paidAt: verification.paidAt ?? new Date(),
+          ...(providerTransactionId ? { providerTransactionId } : {}),
         },
       });
+
+      if (markedSuccessful.count !== 1) {
+        return { status: PaymentStatus.SUCCESS };
+      }
 
       await this.ordersService.confirmPayment(
         payment.orderId,
@@ -1027,14 +1102,14 @@ export class PaymentsService {
       verification.status === 'failed' ||
       verification.status === 'abandoned'
     ) {
-      await this.prisma.payment.update({
-        where: {
-          id: payment.id,
-        },
-        data: {
-          status: PaymentStatus.FAILED,
-        },
+      const markedFailed = await this.prisma.payment.updateMany({
+        where: { id: payment.id, status: PaymentStatus.PENDING },
+        data: { status: PaymentStatus.FAILED },
       });
+
+      if (markedFailed.count !== 1) {
+        return { status: PaymentStatus.FAILED };
+      }
 
       await this.ordersService.markPaymentFailed(
         payment.orderId,

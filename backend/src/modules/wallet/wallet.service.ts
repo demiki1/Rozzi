@@ -359,8 +359,24 @@ export class WalletService {
 
     const result = await this.prisma.$transaction(
       async (tx) => {
+        const current = await tx.walletTransaction.findUnique({
+          where: { id: transaction.id },
+        });
+
+        if (!current) {
+          throw new NotFoundException('Wallet funding transaction not found.');
+        }
+
+        if (current.status === 'SUCCESS') {
+          return current;
+        }
+
+        if (current.status !== 'PENDING') {
+          throw new ConflictException('Wallet funding transaction is not pending.');
+        }
+
         const wallet = await tx.wallet.findUnique({
-          where: { id: transaction.walletId },
+          where: { id: current.walletId },
         });
 
         if (!wallet) {
@@ -368,7 +384,7 @@ export class WalletService {
         }
 
         const before = wallet.balance;
-        const after = before + transaction.amount;
+        const after = before + current.amount;
 
         await tx.wallet.update({
           where: { id: wallet.id },
@@ -376,7 +392,7 @@ export class WalletService {
         });
 
         return tx.walletTransaction.update({
-          where: { id: transaction.id },
+          where: { id: current.id },
           data: {
             status: 'SUCCESS',
             balanceBefore: before,
@@ -388,7 +404,6 @@ export class WalletService {
         isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
       },
     );
-
     return {
       success: true,
       balance: result.balanceAfter,
@@ -407,22 +422,33 @@ export class WalletService {
           throw new BadRequestException('Wallet is unavailable.');
         }
 
-        if (wallet.balance < dto.amount) {
-          throw new ConflictException(
-            'Insufficient wallet balance.',
-          );
+        // Reserve the withdrawal atomically so concurrent withdrawals cannot
+        // both spend the same observed wallet balance.
+        const debited = await tx.wallet.updateMany({
+          where: {
+            id: wallet.id,
+            isActive: true,
+            balance: { gte: dto.amount },
+          },
+          data: {
+            balance: { decrement: dto.amount },
+          },
+        });
+
+        if (debited.count !== 1) {
+          throw new ConflictException('Insufficient wallet balance.');
         }
 
-        const before = wallet.balance;
-        const after = before - dto.amount;
+        const updatedWallet = await tx.wallet.findUniqueOrThrow({
+          where: { id: wallet.id },
+          select: { balance: true },
+        });
+
+        const before = updatedWallet.balance + dto.amount;
+        const after = updatedWallet.balance;
         const ref = `RZW-WD-${randomBytes(7)
           .toString('hex')
           .toUpperCase()}`;
-
-        await tx.wallet.update({
-          where: { id: wallet.id },
-          data: { balance: after },
-        });
 
         await tx.walletTransaction.create({
           data: {
@@ -477,10 +503,14 @@ export class WalletService {
         isActive: true,
         startsAt: { lte: now },
         endsAt: { gte: now },
-        OR: [
-          { vendorId: null },
-          { vendorId: dto.vendorId || undefined },
-        ],
+        ...(dto.vendorId
+          ? {
+              OR: [
+                { vendorId: null },
+                { vendorId: dto.vendorId },
+              ],
+            }
+          : { vendorId: null }),
       },
     });
 

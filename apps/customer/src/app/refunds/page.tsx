@@ -56,6 +56,16 @@ function formatDate(value: string) {
 }
 
 function statusLabel(status: string) {
+  const normalized = status.toUpperCase();
+
+  if (normalized === 'REQUESTED' || normalized === 'PROCESSING' || normalized === 'PENDING') {
+    return 'Refund pending';
+  }
+
+  if (normalized === 'PROCESSED' || normalized === 'COMPLETED') {
+    return 'Refund processed';
+  }
+
   return status.replace(/_/g, " ");
 }
 
@@ -218,7 +228,7 @@ export default function RefundsPage() {
       });
 
       setSubmitSuccess(
-        "Your refund request has been submitted. An admin will review it."
+        "Your refund request has been submitted. Your refund is pending ROZZI admin review and processing."
       );
 
       setShowRequestForm(false);

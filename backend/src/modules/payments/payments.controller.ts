@@ -68,14 +68,18 @@ export class PaymentsController {
   // Client calls this after the provider redirects back — a convenience
   // path, not a trusted one. It re-verifies with the provider exactly like
   // the webhook does; it does not accept the redirect's own status claim.
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.CUSTOMER)
   @Get('verify/:reference')
   verify(
+    @CurrentUser() user: { userId: string },
     @Param('reference') reference: string,
     @Query('transaction_id') transactionId?: string,
   ) {
     return this.paymentsService.verifyByReference(
       reference,
       transactionId,
+      user.userId,
     );
   }
 

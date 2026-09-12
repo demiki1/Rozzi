@@ -41,6 +41,12 @@ export class UpdatePricingConfigDto {
   deliveryRadiusKm?: number;
 
   @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  @Max(100)
+  riderPayoutRatePercent?: number;
+
+  @IsOptional()
   @IsBoolean()
   surgeEnabled?: boolean;
 

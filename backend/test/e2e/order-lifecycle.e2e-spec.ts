@@ -73,6 +73,7 @@ describe('Order lifecycle e2e (§51 critical scenario)', () => {
       },
     });
     serviceAreaId = serviceArea.id;
+    await prisma.pricingConfig.create({ data: { serviceAreaId, serviceFeeRatePercent: 0, serviceFeeCapAmount: 100_000, baseDeliveryFee: 50_000, perKmDeliveryFee: 0, deliveryRadiusKm: 10, riderPayoutRatePercent: 92, isActive: true } });
     const zone = await prisma.deliveryZone.create({
       data: { serviceAreaId, name: `TestZone-${unique}`, radiusKm: 10 },
     });
@@ -166,7 +167,7 @@ describe('Order lifecycle e2e (§51 critical scenario)', () => {
     const res = await request(app.getHttpServer())
       .post('/api/customer/addresses')
       .set('Authorization', `Bearer ${customerToken}`)
-      .send({ label: 'Home', addressText: '1 Test Street' });
+      .send({ label: 'Home', addressText: '1 Test Street', latitude: 6.51, longitude: 7.51 });
     expect(res.status).toBe(201);
     (global as any).__addressId = res.body.id;
   });

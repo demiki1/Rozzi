@@ -253,33 +253,30 @@ export class AuthService {
       BCRYPT_ROUNDS,
     );
 
-    await this.prisma.$transaction([
-      this.prisma.user.update({
-        where: {
-          id: row.userId,
-        },
-        data: {
-          passwordHash,
-        },
-      }),
-      this.prisma.passwordResetToken.update({
+    await this.prisma.$transaction(async (tx) => {
+      const consumed = await tx.passwordResetToken.updateMany({
         where: {
           id: row.id,
+          usedAt: null,
+          expiresAt: { gt: new Date() },
         },
-        data: {
-          usedAt: new Date(),
-        },
-      }),
-      this.prisma.refreshToken.updateMany({
-        where: {
-          userId: row.userId,
-          revoked: false,
-        },
-        data: {
-          revoked: true,
-        },
-      }),
-    ]);
+        data: { usedAt: new Date() },
+      });
+
+      if (consumed.count !== 1) {
+        throw new BadRequestException('Invalid or expired reset token.');
+      }
+
+      await tx.user.update({
+        where: { id: row.userId },
+        data: { passwordHash },
+      });
+
+      await tx.refreshToken.updateMany({
+        where: { userId: row.userId, revoked: false },
+        data: { revoked: true },
+      });
+    });
 
     return {
       success: true,
@@ -421,26 +418,28 @@ export class AuthService {
       );
     }
 
-    await this.prisma.$transaction([
-      this.prisma.verificationToken.update({
+    await this.prisma.$transaction(async (tx) => {
+      const consumed = await tx.verificationToken.updateMany({
         where: {
           id: row.id,
+          usedAt: null,
+          expiresAt: { gt: new Date() },
         },
-        data: {
-          usedAt: new Date(),
-        },
-      }),
-      this.prisma.user.update({
-        where: {
-          id: row.userId,
-        },
+        data: { usedAt: new Date() },
+      });
+
+      if (consumed.count !== 1) {
+        throw new BadRequestException('Invalid or expired verification token.');
+      }
+
+      await tx.user.update({
+        where: { id: row.userId },
         data:
-          type ===
-          VerificationTokenType.EMAIL_VERIFICATION
+          type === VerificationTokenType.EMAIL_VERIFICATION
             ? { isEmailVerified: true }
             : { isPhoneVerified: true },
-      }),
-    ]);
+      });
+    });
 
     return {
       success: true,

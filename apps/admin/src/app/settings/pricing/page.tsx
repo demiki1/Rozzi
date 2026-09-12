@@ -21,6 +21,7 @@ type PricingConfig = {
   baseDeliveryFee: number;
   perKmDeliveryFee: number;
   deliveryRadiusKm: number | string;
+  riderPayoutRatePercent: number | string;
 
   surgeEnabled: boolean;
   surgeLevel: 'NORMAL' | 'SLIGHTLY_HIGH' | 'HIGH' | 'VERY_HIGH';
@@ -40,6 +41,7 @@ type PricingForm = {
   baseDeliveryFeeNaira: string;
   perKmDeliveryFeeNaira: string;
   deliveryRadiusKm: string;
+  riderPayoutRatePercent: string;
 
   surgeEnabled: boolean;
   surgeLevel: PricingConfig['surgeLevel'];
@@ -57,6 +59,7 @@ const DEFAULT_FORM: PricingForm = {
   baseDeliveryFeeNaira: '450',
   perKmDeliveryFeeNaira: '100',
   deliveryRadiusKm: '8',
+  riderPayoutRatePercent: '92',
 
   surgeEnabled: true,
   surgeLevel: 'NORMAL',
@@ -96,6 +99,7 @@ function configToForm(config: PricingConfig): PricingForm {
     baseDeliveryFeeNaira: toNaira(config.baseDeliveryFee),
     perKmDeliveryFeeNaira: toNaira(config.perKmDeliveryFee),
     deliveryRadiusKm: String(config.deliveryRadiusKm),
+    riderPayoutRatePercent: String(config.riderPayoutRatePercent),
 
     surgeEnabled: config.surgeEnabled,
     surgeLevel: config.surgeLevel,
@@ -251,6 +255,12 @@ export default function PricingPage() {
       return 'Delivery radius must be greater than 0 km.';
     }
 
+    const riderPayoutRate = Number(form.riderPayoutRatePercent);
+
+    if (!Number.isFinite(riderPayoutRate) || riderPayoutRate < 0 || riderPayoutRate > 100) {
+      return 'Rider payout rate must be between 0% and 100%.';
+    }
+
     if (!isPositiveOrZero(form.surgeSlightlyHighNaira)) {
       return 'Slightly High surge amount must be zero or greater.';
     }
@@ -337,6 +347,7 @@ export default function PricingPage() {
         baseDeliveryFee: toKobo(form.baseDeliveryFeeNaira),
         perKmDeliveryFee: toKobo(form.perKmDeliveryFeeNaira),
         deliveryRadiusKm: Number(form.deliveryRadiusKm),
+        riderPayoutRatePercent: Number(form.riderPayoutRatePercent),
 
         surgeEnabled: form.surgeEnabled,
         surgeLevel: form.surgeLevel,
@@ -982,6 +993,32 @@ export default function PricingPage() {
         ) : (
           <form onSubmit={handleSubmit}>
             <div className="grid">
+        <section className="card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start' }}>
+            <div>
+              <h2 style={{ margin: 0, fontSize: 18 }}>Rider payout</h2>
+              <p style={{ margin: '7px 0 0', color: '#756b64', lineHeight: 1.5, fontSize: 13 }}>
+                Percentage of the delivery fee paid to the rider. ROZZI receives the remaining percentage.
+              </p>
+            </div>
+            <strong style={{ fontSize: 22, whiteSpace: 'nowrap' }}>{form.riderPayoutRatePercent}%</strong>
+          </div>
+          <div style={{ marginTop: 18 }}>
+            <label htmlFor="rider-payout-rate" style={{ display: 'block', fontSize: 12, fontWeight: 800, marginBottom: 7 }}>
+              Rider payout rate (%)
+            </label>
+            <input
+              id="rider-payout-rate"
+              type="number"
+              min="0"
+              max="100"
+              step="0.01"
+              value={form.riderPayoutRatePercent}
+              onChange={(event) => updateField('riderPayoutRatePercent', event.target.value)}
+              style={{ width: '100%', minHeight: 42, border: '1px solid #d9cec5', borderRadius: 10, padding: '0 12px', font: 'inherit' }}
+            />
+          </div>
+        </section>
               <section className="card">
                 <div className="card-heading">
                   <div>

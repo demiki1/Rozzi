@@ -1,0 +1,86 @@
+name: ROZZI admin hardening validation
+
+on:
+  push:
+    branches: [codex/rozzifix-batch1]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: rozzifix-admin-audit
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  admin-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: marketplace_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/marketplace_test
+      JWT_ACCESS_SECRET: rozzi-ci-access-secret
+      JWT_REFRESH_SECRET: rozzi-ci-refresh-secret
+      CORS_ORIGIN: http://localhost:3001,http://localhost:3002,http://localhost:3003,http://localhost:3004
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/rozzifix-batch1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - name: Apply admin hardening patch
+        run: python3 .github/patches/batch33.py
+      - name: Install backend
+        working-directory: backend
+        run: npm ci --no-audit --no-fund
+      - name: Prepare database
+        working-directory: backend
+        run: |
+          npx prisma generate
+          npx prisma migrate deploy
+      - name: Build backend
+        working-directory: backend
+        run: npm run build
+      - name: Run backend unit tests
+        working-directory: backend
+        run: npm test -- --runInBand
+      - name: Run admin propagation and full E2E tests
+        working-directory: backend
+        run: npm run test:e2e -- --runInBand
+      - name: Build admin frontend
+        working-directory: apps/admin
+        run: |
+          NODE_ENV=development npm ci --no-audit --no-fund
+          NODE_ENV=production npm run build
+      - name: Build all other frontends
+        run: |
+          cd apps/customer && npm ci --no-audit --no-fund && NODE_ENV=production npm run build
+          cd ../vendor && npm ci --no-audit --no-fund && NODE_ENV=production npm run build
+          cd ../rider && npm ci --no-audit --no-fund && NODE_ENV=production npm run build
+      - name: Persist validated production hardening
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git diff --check
+          git add backend/src/modules/orders/orders.service.ts .github/patches/batch33.py .github/workflows/rozzifix-admin.yml apps/admin/package.json apps/admin/next.config.js
+          if git diff --cached --quiet; then
+            echo 'No pending admin hardening changes.'
+          else
+            git commit -m 'fix: complete admin hardening validation [skip ci]'
+            git push origin HEAD:codex/rozzifix-batch1
+          fi

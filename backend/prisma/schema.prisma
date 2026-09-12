@@ -407,6 +407,8 @@ model PricingConfig {
   perKmDeliveryFee Int // kobo
   deliveryRadiusKm Decimal @db.Decimal(6, 2)
 
+  riderPayoutRatePercent Decimal @default(92) @db.Decimal(5, 2)
+
   // Surge pricing. Amounts are fixed kobo charges for the selected level.
   surgeEnabled            Boolean    @default(true)
   surgeLevel              SurgeLevel @default(NORMAL)
@@ -1176,6 +1178,7 @@ model Order {
   discountAmount         Int            @default(0)
   totalAmount            Int
   commissionRateSnapshot Decimal        @db.Decimal(5, 2)
+  riderPayoutRateSnapshot Decimal?       @db.Decimal(5, 2)
   pricingConfigId        String?
   pricingConfig          PricingConfig? @relation(fields: [pricingConfigId], references: [id], onDelete: SetNull)
 

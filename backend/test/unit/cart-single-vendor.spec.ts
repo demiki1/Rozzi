@@ -2,13 +2,21 @@ import { ConflictException } from '@nestjs/common';
 import { CartService } from '../../src/modules/cart/cart.service';
 
 function buildPrismaMock(opts: { existingCartVendorId: string | null; productVendorId: string }) {
-  const cart = { id: 'cart-1', customerId: 'customer-1', vendorId: opts.existingCartVendorId };
+  const cart = {
+    id: 'cart-1',
+    customerId: 'customer-1',
+    vendorId: opts.existingCartVendorId,
+    items: [],
+    // Keep the fixture shape aligned with CartService.cartInclude for an occupied cart.
+    vendor: opts.existingCartVendorId ? { id: opts.existingCartVendorId } : null,
+  };
   const product = {
     id: 'product-1',
     isAvailable: true,
     vendorId: opts.productVendorId,
     vendor: { id: opts.productVendorId },
     inventory: { quantity: 10 },
+    variants: [],
     optionGroups: [],
   };
 
@@ -19,7 +27,8 @@ function buildPrismaMock(opts: { existingCartVendorId: string | null; productVen
     cart: {
       findUnique: jest.fn(async () => cart),
       create: jest.fn(async () => cart),
-      update: jest.fn(async () => cart),
+      update: jest.fn(async ({ data }: any) => ({ ...cart, ...data })),
+      updateMany: jest.fn(async ({ data }: any) => ({ count: 1 })),
     },
     inventory: {
       findUnique: jest.fn(async () => product.inventory),
@@ -42,9 +51,14 @@ describe('CartService — single-vendor-per-cart (§42)', () => {
       service.addItem('customer-1', { productId: 'product-1', quantity: 1 }),
     ).resolves.toBeDefined();
 
-    // The cart's vendorId gets set to the first product's vendor.
-    expect(prisma.cart.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { vendorId: 'vendor-A' } }),
+    expect(prisma.cart.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: 'cart-1',
+          OR: [{ vendorId: null }, { vendorId: 'vendor-A' }],
+        }),
+        data: { vendorId: 'vendor-A' },
+      }),
     );
   });
 
@@ -65,9 +79,19 @@ describe('CartService — single-vendor-per-cart (§42)', () => {
       service.addItem('customer-1', { productId: 'product-1', quantity: 1 }),
     ).rejects.toThrow(ConflictException);
 
-    // Must not have mutated the cart's vendor or created an item on the
-    // rejected path.
-    expect(prisma.cart.update).not.toHaveBeenCalled();
+    expect(prisma.cart.updateMany).not.toHaveBeenCalled();
+    expect(prisma.cartItem.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects a concurrent vendor claim when the cart was claimed by another vendor first', async () => {
+    const prisma = buildPrismaMock({ existingCartVendorId: null, productVendorId: 'vendor-A' });
+    prisma.cart.updateMany.mockResolvedValue({ count: 0 });
+    const service = new CartService(prisma as any);
+
+    await expect(
+      service.addItem('customer-1', { productId: 'product-1', quantity: 1 }),
+    ).rejects.toMatchObject({ response: { code: 'CART_VENDOR_MISMATCH' } });
+
     expect(prisma.cartItem.create).not.toHaveBeenCalled();
   });
 

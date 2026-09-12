@@ -66,7 +66,20 @@ export class CartService {
       throw new BadRequestException('Not enough stock available for the requested quantity.');
     }
 
-    await this.prisma.cart.update({ where: { id: cart.id }, data: { vendorId: product.vendorId } });
+    const claimed = await this.prisma.cart.updateMany({
+      where: {
+        id: cart.id,
+        OR: [{ vendorId: null }, { vendorId: product.vendorId }],
+      },
+      data: { vendorId: product.vendorId },
+    });
+
+    if (claimed.count !== 1) {
+      throw new ConflictException({
+        code: 'CART_VENDOR_MISMATCH',
+        message: 'Your cart contains items from another store. Start a new cart to add items from this one.',
+      });
+    }
 
     const existingItem = await this.prisma.cartItem.findUnique({
       where: { cartId_productId_configurationKey: { cartId: cart.id, productId: dto.productId, configurationKey } },

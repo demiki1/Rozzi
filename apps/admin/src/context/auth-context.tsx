@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
-import { api, setAccessToken, clearTokens, getAccessToken } from '@/lib/api-client';
+import { api, setAccessToken, clearTokens } from '@/lib/api-client';
 
 interface AdminUser {
   userId: string;
@@ -18,10 +18,8 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
-// Decodes the JWT payload client-side purely to read { sub, role } for
-// display/guarding — this is NOT a verification step. The backend is the
-// only party that verifies the signature; the frontend just needs to know
-// who's "probably" logged in to decide what to render.
+// Client-side decoding is only for display/route gating. Signature
+// verification remains exclusively on the backend.
 function decodeJwtPayload(token: string): { sub: string; role: string } | null {
   try {
     const payload = token.split('.')[1];
@@ -43,9 +41,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
         const tokens = await api.post<{ accessToken: string }>('/api/auth/refresh');
         if (!mounted) return;
-        setAccessToken(tokens.accessToken);
         const payload = decodeJwtPayload(tokens.accessToken);
-        if (payload) setUser({ userId: payload.sub, role: payload.role });
+        if (!payload || payload.role !== 'ADMIN') {
+          clearTokens();
+          if (mounted) setUser(null);
+          return;
+        }
+        setAccessToken(tokens.accessToken);
+        setUser({ userId: payload.sub, role: payload.role });
       } catch {
         if (mounted) setUser(null);
       } finally {
@@ -62,6 +65,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }, { 'X-Use-HttpOnly-Refresh-Cookie': 'true' });
     const payload = decodeJwtPayload(tokens.accessToken);
     if (!payload || payload.role !== 'ADMIN') {
+      clearTokens();
       throw new Error('This account is not an admin account.');
     }
     setAccessToken(tokens.accessToken);
