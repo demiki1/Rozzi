@@ -503,10 +503,14 @@ export class WalletService {
         isActive: true,
         startsAt: { lte: now },
         endsAt: { gte: now },
-        OR: [
-          { vendorId: null },
-          { vendorId: dto.vendorId || undefined },
-        ],
+        ...(dto.vendorId
+          ? {
+              OR: [
+                { vendorId: null },
+                { vendorId: dto.vendorId },
+              ],
+            }
+          : { vendorId: null }),
       },
     });
 
