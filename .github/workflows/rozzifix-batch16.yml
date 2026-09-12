@@ -40,6 +40,8 @@ jobs:
           cache: npm
           cache-dependency-path: backend/package-lock.json
 
+      # The patch is intentionally idempotent: after the validated production
+      # commit it becomes a no-op, so this run verifies the committed tree.
       - name: Apply customer audit patch
         run: python3 .github/patches/batch30.py
 
