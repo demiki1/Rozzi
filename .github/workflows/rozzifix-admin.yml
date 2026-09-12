@@ -72,7 +72,7 @@ jobs:
           cd ../vendor && npm ci --no-audit --no-fund && NODE_ENV=production npm run build
           cd ../rider && npm ci --no-audit --no-fund && NODE_ENV=production npm run build
       - name: Persist validated production hardening
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
