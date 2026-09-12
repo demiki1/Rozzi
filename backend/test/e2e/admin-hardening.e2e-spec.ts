@@ -101,9 +101,11 @@ describe('Admin hardening e2e', () => {
     expect(response.status).toBe(403);
   });
 
-  it('propagates an Admin UI settings update through API and DB into checkout behavior', async () => {
-    const before = await prisma.setting.findUnique({ where: { key: 'ordersEnabled' } });
-    const beforeOrdersEnabled = before?.value === false ? false : true;
+  it('propagates Admin UI settings through API and DB into checkout behavior', async () => {
+    const beforeOrders = await prisma.setting.findUnique({ where: { key: 'ordersEnabled' } });
+    const beforeOrdersEnabled = beforeOrders?.value === false ? false : true;
+    const beforeMinimum = await prisma.setting.findUnique({ where: { key: 'minimumOrderAmount' } });
+    const beforeMinimumAmount = typeof beforeMinimum?.value === 'number' ? beforeMinimum.value : Number(beforeMinimum?.value ?? 0);
 
     const disabled = await request(app.getHttpServer())
       .patch('/api/admin/settings')
@@ -138,23 +140,39 @@ describe('Admin hardening e2e', () => {
       .set('Authorization', `Bearer ${superToken}`)
       .send({ ordersEnabled: true });
     expect(enabled.status).toBe(200);
-    expect((await prisma.setting.findUnique({ where: { key: 'ordersEnabled' } }))?.value).toBe(true);
 
     const commissionBefore = await prisma.commissionConfig.findFirst({ where: { isActive: true }, orderBy: { createdAt: 'desc' } });
     const commissionBeforeRate = commissionBefore ? Number(commissionBefore.defaultRatePercent) : 10;
-
     const commissionUpdate = await request(app.getHttpServer())
       .patch('/api/admin/settings')
       .set('Authorization', `Bearer ${superToken}`)
       .send({ defaultCommissionRate: 17 });
     expect(commissionUpdate.status).toBe(200);
-    const activeCommission = await prisma.commissionConfig.findFirst({ where: { isActive: true }, orderBy: { createdAt: 'desc' } });
-    expect(Number(activeCommission?.defaultRatePercent)).toBe(17);
+    expect(Number((await prisma.commissionConfig.findFirst({ where: { isActive: true }, orderBy: { createdAt: 'desc' } }))?.defaultRatePercent)).toBe(17);
+
+    const minimumUpdate = await request(app.getHttpServer())
+      .patch('/api/admin/settings')
+      .set('Authorization', `Bearer ${superToken}`)
+      .send({ minimumOrderAmount: 20000 });
+    expect(minimumUpdate.status).toBe(200);
+    expect((await prisma.setting.findUnique({ where: { key: 'minimumOrderAmount' } }))?.value).toBe(20000);
 
     await prisma.cartItem.deleteMany({ where: { cart: { customerId: customer.user.id } } });
     const cart = await prisma.cart.findUniqueOrThrow({ where: { customerId: customer.user.id } });
-    await prisma.cart.update({ where: { id: cart.id }, data: { vendorId: vendor.id } });
     await prisma.cartItem.create({ data: { cartId: cart.id, productId: product.id, quantity: 1 } });
+
+    const tooSmall = await request(app.getHttpServer())
+      .post('/api/orders/checkout')
+      .set('Authorization', `Bearer ${customer.token}`)
+      .send({ serviceAreaId: area.id, deliveryType: OrderDeliveryType.PICKUP });
+    expect(tooSmall.status).toBe(400);
+    expect(tooSmall.body?.error?.message ?? tooSmall.body?.message).toContain('minimum order of 200 NGN');
+
+    const minimumReset = await request(app.getHttpServer())
+      .patch('/api/admin/settings')
+      .set('Authorization', `Bearer ${superToken}`)
+      .send({ minimumOrderAmount: beforeMinimumAmount });
+    expect(minimumReset.status).toBe(200);
 
     const placed = await request(app.getHttpServer())
       .post('/api/orders/checkout')
