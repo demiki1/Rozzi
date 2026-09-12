@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../config/prisma.service';
 import { AuditLogService } from '../audit/audit-log.service';
 import { UpdateSettingsDto, UpsertSettingDto } from './dto/settings.dto';
@@ -27,11 +27,7 @@ export class SettingsAdminService {
   async list() {
     const rows = await this.prisma.setting.findMany({ orderBy: { key: 'asc' } });
     const values: Record<string, unknown> = { ...DEFAULTS };
-    const aliases: Record<string, string> = {
-      'dispatch.assignmentTimeoutSeconds': 'dispatchAssignmentTimeoutSeconds',
-      'dispatch.maxRiderDistanceKm': 'dispatchMaxRiderDistanceKm',
-      'dispatch.maxAssignmentAttempts': 'dispatchMaxAssignmentAttempts',
-    };
+    const aliases: Record<string, string> = { 'dispatch.assignmentTimeoutSeconds': 'dispatchAssignmentTimeoutSeconds', 'dispatch.maxRiderDistanceKm': 'dispatchMaxRiderDistanceKm', 'dispatch.maxAssignmentAttempts': 'dispatchMaxAssignmentAttempts' };
     for (const row of rows) values[aliases[row.key] ?? row.key] = row.value;
     return Object.entries(values).map(([key, value]) => ({ key, value }));
   }
@@ -44,26 +40,40 @@ export class SettingsAdminService {
 
   async updateMany(dto: UpdateSettingsDto, actorId: string) {
     const changed: Record<string, { before: unknown; after: unknown }> = {};
-    for (const [rawKey, value] of Object.entries(dto)) {
-      if (value === undefined) continue;
-      const key = ({ dispatchAssignmentTimeoutSeconds: 'dispatch.assignmentTimeoutSeconds', dispatchMaxRiderDistanceKm: 'dispatch.maxRiderDistanceKm', dispatchMaxAssignmentAttempts: 'dispatch.maxAssignmentAttempts' } as Record<string,string>)[rawKey] ?? rawKey;
-      const before = await this.get(key);
-      await this.prisma.setting.upsert({
-        where: { key },
-        update: { value: value as any },
-        create: { key, value: value as any },
-      });
-      changed[key] = { before: before.value, after: value };
-    }
-    if (Object.keys(changed).length) {
-      await this.audit.record({ actorId, action: 'settings.update', entityType: 'Setting', before: changed, after: changed });
-    }
+    await this.prisma.$transaction(async (tx) => {
+      for (const [rawKey, value] of Object.entries(dto)) {
+        if (value === undefined) continue;
+        const key = ({ dispatchAssignmentTimeoutSeconds: 'dispatch.assignmentTimeoutSeconds', dispatchMaxRiderDistanceKm: 'dispatch.maxRiderDistanceKm', dispatchMaxAssignmentAttempts: 'dispatch.maxAssignmentAttempts' } as Record<string,string>)[rawKey] ?? rawKey;
+        const row = await tx.setting.findUnique({ where: { key } });
+        const before = row?.value ?? DEFAULTS[key];
+        await tx.setting.upsert({ where: { key }, update: { value: value as any }, create: { key, value: value as any } });
+        changed[key] = { before, after: value };
+      }
+
+      if (dto.defaultCommissionRate !== undefined) {
+        await tx.commissionConfig.updateMany({ where: { isActive: true }, data: { isActive: false } });
+        await tx.commissionConfig.create({ data: { defaultRatePercent: dto.defaultCommissionRate, isActive: true } });
+      }
+    });
+
+    if (Object.keys(changed).length) await this.audit.record({ actorId, action: 'settings.update', entityType: 'Setting', before: changed, after: changed });
     return this.list();
   }
 
   async upsert(dto: UpsertSettingDto, actorId: string) {
+    if (dto.key === 'defaultCommissionRate') {
+      const rate = Number(dto.value);
+      if (!Number.isInteger(rate) || rate < 1 || rate > 100) throw new BadRequestException('Default commission rate must be between 1% and 100%.');
+    }
     const before = await this.get(dto.key).catch(() => ({ key: dto.key, value: undefined }));
-    const row = await this.prisma.setting.upsert({ where: { key: dto.key }, update: { value: dto.value as any }, create: { key: dto.key, value: dto.value as any } });
+    const row = await this.prisma.$transaction(async (tx) => {
+      const saved = await tx.setting.upsert({ where: { key: dto.key }, update: { value: dto.value as any }, create: { key: dto.key, value: dto.value as any } });
+      if (dto.key === 'defaultCommissionRate') {
+        await tx.commissionConfig.updateMany({ where: { isActive: true }, data: { isActive: false } });
+        await tx.commissionConfig.create({ data: { defaultRatePercent: Number(dto.value), isActive: true } });
+      }
+      return saved;
+    });
     await this.audit.record({ actorId, action: 'setting.upsert', entityType: 'Setting', entityId: dto.key, before, after: row });
     return row;
   }
