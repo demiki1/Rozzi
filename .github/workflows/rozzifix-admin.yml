@@ -63,28 +63,24 @@ jobs:
         run: npm run test:e2e -- --runInBand
       - name: Build admin frontend
         working-directory: apps/admin
-        env:
-          NODE_ENV: production
         run: |
-          npm ci --no-audit --no-fund
-          npm run build
+          NODE_ENV=development npm ci --no-audit --no-fund
+          NODE_ENV=production npm run build
       - name: Build all other frontends
         run: |
           cd apps/customer && npm ci --no-audit --no-fund && NODE_ENV=production npm run build
           cd ../vendor && npm ci --no-audit --no-fund && NODE_ENV=production npm run build
           cd ../rider && npm ci --no-audit --no-fund && NODE_ENV=production npm run build
-      # This push-triggered job validates the actual branch tree before persisting production fixes.
       - name: Persist validated production hardening
         if: github.event_name == 'push'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git diff --check
-          git add backend/src/modules/orders/orders.service.ts .github/patches/batch33.py .github/workflows/rozzifix-admin.yml
+          git add backend/src/modules/orders/orders.service.ts .github/patches/batch33.py .github/workflows/rozzifix-admin.yml apps/admin/package.json apps/admin/next.config.js
           if git diff --cached --quiet; then
             echo 'No pending admin hardening changes.'
           else
-            git commit -m 'fix: complete admin checkout hardening [skip ci]'
+            git commit -m 'fix: complete admin hardening validation [skip ci]'
             git push origin HEAD:codex/rozzifix-batch1
           fi
-      # Keep Admin PR validation tied to the exact branch tree rather than a generated merge snapshot.
