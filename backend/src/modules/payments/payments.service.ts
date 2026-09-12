@@ -345,55 +345,65 @@ export class PaymentsService {
       );
     }
 
-    // Never allow cumulative successful/pending refunds to exceed the payment.
-    const refundedTotals = await this.prisma.refund.aggregate({
-      where: {
-        paymentId: payment.id,
-        status: {
-          in: ['REQUESTED', 'PROCESSING', 'PROCESSED'],
+    // Serialize refund allocation on the payment row. Without a row lock, two
+    // concurrent admin requests can both observe the same remaining balance
+    // and create refunds whose combined amount exceeds the original payment.
+    // The lock also makes the pending-refund check atomic with allocation.
+    const refund = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`
+        SELECT id FROM "Payment" WHERE id = ${payment.id} FOR UPDATE
+      `;
+
+      // Never allow cumulative successful/pending refunds to exceed the payment.
+      const refundedTotals = await tx.refund.aggregate({
+        where: {
+          paymentId: payment.id,
+          status: {
+            in: ['REQUESTED', 'PROCESSING', 'PROCESSED'],
+          },
         },
-      },
-      _sum: {
-        amount: true,
-      },
-    });
-
-    const alreadyAllocated = refundedTotals._sum.amount ?? 0;
-    const remaining = payment.amount - alreadyAllocated;
-
-    if (refundAmount > remaining) {
-      throw new BadRequestException(
-        `Refund amount exceeds the remaining refundable balance of ${remaining} kobo.`,
-      );
-    }
-
-    // A pending provider refund must settle before another refund attempt is
-    // created; otherwise a retry could double-submit money to the provider.
-    const existing = await this.prisma.refund.findFirst({
-      where: {
-        paymentId: payment.id,
-        status: {
-          in: ['REQUESTED', 'PROCESSING'],
+        _sum: {
+          amount: true,
         },
-      },
-      orderBy: {
-        createdAt: 'desc',
-      },
-    });
+      });
 
-    if (existing) {
-      return existing;
-    }
+      const alreadyAllocated = refundedTotals._sum.amount ?? 0;
+      const remaining = payment.amount - alreadyAllocated;
 
-    const refund = await this.prisma.refund.create({
-      data: {
-        paymentId: payment.id,
-        orderId,
-        amount: refundAmount,
-        reason,
-        requestedByUserId: actorId,
-        status: 'PROCESSING',
-      },
+      if (refundAmount > remaining) {
+        throw new BadRequestException(
+          `Refund amount exceeds the remaining refundable balance of ${remaining} kobo.`,
+        );
+      }
+
+      // A pending provider refund must settle before another refund attempt is
+      // created; otherwise a retry could double-submit money to the provider.
+      const existing = await tx.refund.findFirst({
+        where: {
+          paymentId: payment.id,
+          status: {
+            in: ['REQUESTED', 'PROCESSING'],
+          },
+        },
+        orderBy: {
+          createdAt: 'desc',
+        },
+      });
+
+      if (existing) {
+        return existing;
+      }
+
+      return tx.refund.create({
+        data: {
+          paymentId: payment.id,
+          orderId,
+          amount: refundAmount,
+          reason,
+          requestedByUserId: actorId,
+          status: 'PROCESSING',
+        },
+      });
     });
 
     // Wallet payments are refunded internally: credit the customer's wallet
