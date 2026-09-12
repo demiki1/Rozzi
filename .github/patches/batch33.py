@@ -18,3 +18,4 @@ if old not in text:
 
 path.write_text(text.replace(old, new, 1), encoding='utf-8')
 print('Applied admin minimum-order propagation patch.')
+# Validation is intentionally performed against the exact branch tree on push; production changes are persisted only after all checks pass.
