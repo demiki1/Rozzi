@@ -383,7 +383,7 @@ export class PaymentsService {
     // The lock also makes the pending-refund check atomic with allocation.
     const allocation = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`
-        SELECT id FROM "Payment" WHERE id = ${payment.id} FOR UPDATE
+        SELECT id FROM "payments" WHERE id = ${payment.id} FOR UPDATE
       `;
 
       // Never allow cumulative successful/pending refunds to exceed the payment.

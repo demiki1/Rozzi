@@ -5,7 +5,7 @@ import { AuditLogService } from '../audit/audit-log.service';
 import { PAYMENT_SUCCEEDED_EVENT, PaymentSucceededPayload } from '../payments/payment-events';
 import { REFUND_PROCESSED_EVENT, RefundProcessedPayload } from '../payments/refund-events';
 import { ORDER_TRANSITIONED_EVENT, OrderTransitionedPayload } from '../orders/order-events';
-import { LedgerAccountType, LedgerEntryType, OrderStatus } from '@prisma/client';
+import { LedgerAccountType, LedgerEntryType, OrderStatus, Prisma } from '@prisma/client';
 
 @Injectable()
 export class LedgerService {
@@ -28,17 +28,38 @@ export class LedgerService {
     description?: string;
     idempotencyKey?: string | null;
   }) {
-    return this.prisma.ledgerEntry.create({
-      data: {
-        type: params.type,
-        accountType: params.accountType,
-        accountId: params.accountId ?? null,
-        orderId: params.orderId ?? null,
-        amount: params.amount,
-        description: params.description,
-        idempotencyKey: params.idempotencyKey ?? null,
-      },
-    });
+    if (params.idempotencyKey) {
+      const existing = await this.prisma.ledgerEntry.findFirst({
+        where: { idempotencyKey: params.idempotencyKey },
+      });
+      if (existing) return existing;
+    }
+
+    try {
+      return await this.prisma.ledgerEntry.create({
+        data: {
+          type: params.type,
+          accountType: params.accountType,
+          accountId: params.accountId ?? null,
+          orderId: params.orderId ?? null,
+          amount: params.amount,
+          description: params.description,
+          idempotencyKey: params.idempotencyKey ?? null,
+        },
+      });
+    } catch (error) {
+      if (
+        params.idempotencyKey &&
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        const existing = await this.prisma.ledgerEntry.findFirst({
+          where: { idempotencyKey: params.idempotencyKey },
+        });
+        if (existing) return existing;
+      }
+      throw error;
+    }
   }
 
   // ---- Event-driven booking ----
@@ -72,18 +93,6 @@ export class LedgerService {
   @OnEvent(ORDER_TRANSITIONED_EVENT)
   async onOrderTransitioned(payload: OrderTransitionedPayload) {
     if (payload.toStatus !== OrderStatus.DELIVERED) return;
-
-    // Idempotency: if this order has already been booked (e.g. a
-    // transition somehow fires twice), don't double-book. Checked by
-    // looking for an existing VENDOR_EARNING entry for this order rather
-    // than trusting the caller to only call this once.
-    const alreadyBooked = await this.prisma.ledgerEntry.findFirst({
-      where: { orderId: payload.orderId, type: LedgerEntryType.VENDOR_EARNING },
-    });
-    if (alreadyBooked) {
-      this.logger.warn(`Order ${payload.orderId} already has a VENDOR_EARNING entry â€” skipping re-booking.`);
-      return;
-    }
 
     const order = await this.prisma.order.findUnique({
       where: { id: payload.orderId },
@@ -171,10 +180,6 @@ export class LedgerService {
 
   @OnEvent(REFUND_PROCESSED_EVENT)
   async onRefundProcessed(payload: RefundProcessedPayload) {
-    const existing = await this.prisma.ledgerEntry.findFirst({
-      where: { orderId: payload.orderId, type: LedgerEntryType.REFUND, description: { contains: payload.refundId } },
-    });
-    if (existing) return;
     const refundAmount = Math.abs(payload.amountKobo);
     await this.record({
       type: LedgerEntryType.REFUND,
