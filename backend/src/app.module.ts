@@ -40,17 +40,13 @@ import { AdvertisingModule } from './modules/advertising/advertising.module';
 import { VendorAdvertisingModule } from './modules/vendor-advertising/vendor-advertising.module';
 import { ReferralsModule } from './modules/referrals/referrals.module';
 import { PricingModule } from './modules/pricing/pricing.module';
+import { MarketplaceSettingsGuard } from './common/guards/marketplace-settings.guard';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
-    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }]), // global default rate limit
-    // Global event bus (decouples Orders/Delivery/Notifications/Finance/
-    // Realtime so none of them import each other directly).
+    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }]),
     EventEmitterModule.forRoot(),
-    // Enables @Cron() handlers anywhere in the app — first real use is
-    // DispatchService's delivery-offer timeout sweep (closes the Phase 7
-    // "no scheduler" gap).
     ScheduleModule.forRoot(),
     PrismaModule,
     AuditModule,
@@ -87,11 +83,10 @@ import { PricingModule } from './modules/pricing/pricing.module';
     CmsModule,
   ],
   providers: [
-    // Every route requires a valid JWT by default; use @Public() to opt out.
     { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_GUARD, useClass: MarketplaceSettingsGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
   ],
 })
 export class AppModule {}
-
