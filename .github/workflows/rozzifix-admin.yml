@@ -85,3 +85,4 @@ jobs:
             git commit -m 'fix: complete admin checkout hardening [skip ci]'
             git push origin HEAD:codex/rozzifix-batch1
           fi
+      # Keep the Admin validation tied to the exact branch tree, not a stale PR merge snapshot.
