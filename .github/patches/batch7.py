@@ -63,7 +63,7 @@ describe('PaymentsService refund allocation concurrency', () => {
           status: 'PROCESSED',
           amount: 4000,
         }),
-        aggregate: jest.fn(),
+        aggregate: jest.fn().mockResolvedValue({ _sum: { amount: 4000 } }),
       },
       payment: {
         update: jest.fn(),
@@ -108,3 +108,16 @@ describe('PaymentsService refund allocation concurrency', () => {
   });
 });
 ''', encoding='utf-8')
+
+# Repair the customer order page after a prior automation duplicated the refund notice.
+customer_path = 'apps/customer/src/app/orders/[id]/page.tsx'
+customer = read(customer_path)
+refund_block = "{refundPending&&<div className=\"card\" style={{marginTop:12}}><strong>Refund pending</strong><p className=\"muted\">Your order was cancelled. Your payment has not been refunded yet. ROZZI will process the refund separately.</p></div>}{refundProcessed&&<div className=\"card\" style={{marginTop:12}}><strong>Refund processed</strong><p className=\"muted\">Your refund has been processed.</p></div>}"
+first = customer.find(refund_block)
+if first < 0:
+    raise SystemExit('customer refund notice anchor not found')
+customer = customer[:first] + refund_block + customer[first + len(refund_block):]
+while customer.count(refund_block) > 1:
+    customer = customer.replace(refund_block, '', 1)
+customer = customer.replace(refund_block + refund_block, refund_block)
+write(customer_path, customer)

@@ -56,5 +56,5 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git diff --check
           rm -f .github/patches/batch7.py
-          git add backend/src/modules/payments/payments.service.ts backend/test/unit/refund-concurrency.spec.ts .github/workflows/rozzifix-batch3.yml .github/patches/batch7.py
-          if git diff --cached --quiet; then echo 'No batch 7 changes.'; else git commit -m 'fix: serialize refund allocation' && git pull --rebase origin codex/rozzifix-batch1 && git push; fi
+          git add backend/src/modules/payments/payments.service.ts backend/test/unit/refund-concurrency.spec.ts apps/customer/src/app/orders/[id]/page.tsx .github/workflows/rozzifix-batch3.yml .github/patches/batch7.py
+          if git diff --cached --quiet; then echo 'No batch 7 changes.'; else git commit -m 'fix: serialize refund allocation [skip ci]' && git pull --rebase origin codex/rozzifix-batch1 && git push; fi
