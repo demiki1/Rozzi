@@ -39,8 +39,8 @@ jobs:
           node-version: 20
           cache: npm
           cache-dependency-path: backend/package-lock.json
-      - name: Apply auth concurrency hardening
-        run: python3 .github/patches/batch16.py
+      - name: Apply wallet concurrency hardening
+        run: python3 .github/patches/batch17.py
       - name: Validate full repository
         run: |
           cd backend
@@ -59,6 +59,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git diff --check
-          rm -f .github/patches/batch16.py
-          git add backend/src/modules/auth/auth.service.ts .github/patches/batch16.py
-          if git diff --cached --quiet; then echo 'No pending hardening changes.'; else git commit -m 'fix: harden auth token concurrency [skip ci]' && git pull --rebase origin codex/rozzifix-batch1 && git push; fi
+          rm -f .github/patches/batch17.py
+          git add backend/src/modules/payments/payments.service.ts backend/test/unit/wallet-money-concurrency.spec.ts .github/patches/batch17.py
+          if git diff --cached --quiet; then echo 'No pending hardening changes.'; else git commit -m 'fix: serialize wallet payments per order [skip ci]' && git pull --rebase origin codex/rozzifix-batch1 && git push; fi
