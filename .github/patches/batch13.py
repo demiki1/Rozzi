@@ -55,7 +55,7 @@ if needle in test and 'locks the refund row before wallet credit' not in test:
         SELECT id FROM "Refund" WHERE id = ${'refund-1'} FOR UPDATE
       `;
       return client.refund.findUnique({ where: { id: 'refund-1' } });
-    });
+    }) as { status: string };
 
     expect(result.status).toBe('PROCESSED');
     expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
