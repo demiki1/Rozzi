@@ -1,4 +1,5 @@
 # ROZZI hardening validation pipeline. Full repository validation is mandatory.
+# Fresh-run restart: keep the same production changes and validation contract.
 name: ROZZI hardening validation
 
 on:
