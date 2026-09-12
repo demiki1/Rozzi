@@ -359,8 +359,24 @@ export class WalletService {
 
     const result = await this.prisma.$transaction(
       async (tx) => {
+        const current = await tx.walletTransaction.findUnique({
+          where: { id: transaction.id },
+        });
+
+        if (!current) {
+          throw new NotFoundException('Wallet funding transaction not found.');
+        }
+
+        if (current.status === 'SUCCESS') {
+          return current;
+        }
+
+        if (current.status !== 'PENDING') {
+          throw new ConflictException('Wallet funding transaction is not pending.');
+        }
+
         const wallet = await tx.wallet.findUnique({
-          where: { id: transaction.walletId },
+          where: { id: current.walletId },
         });
 
         if (!wallet) {
@@ -368,7 +384,7 @@ export class WalletService {
         }
 
         const before = wallet.balance;
-        const after = before + transaction.amount;
+        const after = before + current.amount;
 
         await tx.wallet.update({
           where: { id: wallet.id },
@@ -376,7 +392,7 @@ export class WalletService {
         });
 
         return tx.walletTransaction.update({
-          where: { id: transaction.id },
+          where: { id: current.id },
           data: {
             status: 'SUCCESS',
             balanceBefore: before,
@@ -388,7 +404,6 @@ export class WalletService {
         isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
       },
     );
-
     return {
       success: true,
       balance: result.balanceAfter,

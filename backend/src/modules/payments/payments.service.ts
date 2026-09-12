@@ -159,23 +159,34 @@ export class PaymentsService {
         throw new BadRequestException('Wallet is unavailable.');
       }
 
-      if (wallet.balance < order.totalAmount) {
+      // Make the balance reservation atomic. Two concurrent order payments
+      // cannot both spend the same observed wallet balance.
+      const debited = await tx.wallet.updateMany({
+        where: {
+          id: wallet.id,
+          isActive: true,
+          balance: { gte: order.totalAmount },
+        },
+        data: {
+          balance: { decrement: order.totalAmount },
+        },
+      });
+
+      if (debited.count !== 1) {
         throw new ConflictException('Insufficient wallet balance.');
       }
 
-      const reference = `RZW-ORD-${order.orderNumber}-${uuidv4()
+      const updatedWallet = await tx.wallet.findUniqueOrThrow({
+        where: { id: wallet.id },
+        select: { balance: true },
+      });
+
+      const reference = `RZW-ORD-${order.orderNumber}-${uuidv4()}
         .slice(0, 8)
         .toUpperCase()}`;
 
-      const before = wallet.balance;
-      const after = before - order.totalAmount;
-
-      await tx.wallet.update({
-        where: { id: wallet.id },
-        data: {
-          balance: after,
-        },
-      });
+      const after = updatedWallet.balance;
+      const before = after + order.totalAmount;
 
       await tx.walletTransaction.create({
         data: {
