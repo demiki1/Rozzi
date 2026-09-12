@@ -442,15 +442,34 @@ export class PaymentsService {
           );
         }
 
-        const before = wallet.balance;
-        const after = before + refundAmount;
+        // Serialize wallet refund balance accounting with concurrent wallet
+        // spends/refunds. The existing payment/refund allocation lock protects
+        // refund duplication; this wallet-row lock protects the wallet ledger
+        // from stale absolute-balance writes.
+        await tx.$queryRaw`
+          SELECT id FROM "Wallet" WHERE id = ${wallet.id} FOR UPDATE
+        `;
 
-        await tx.wallet.update({
+        const currentWallet = await tx.wallet.findUnique({
+          where: { id: wallet.id },
+          select: { balance: true },
+        });
+
+        if (!currentWallet) {
+          throw new BadRequestException(
+            'Customer wallet is unavailable for refund.',
+          );
+        }
+
+        const before = currentWallet.balance;
+        const updatedWallet = await tx.wallet.update({
           where: { id: wallet.id },
           data: {
-            balance: after,
+            balance: { increment: refundAmount },
           },
+          select: { balance: true },
         });
+        const after = updatedWallet.balance;
 
         await tx.walletTransaction.create({
           data: {
