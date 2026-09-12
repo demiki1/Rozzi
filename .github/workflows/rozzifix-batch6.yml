@@ -1,0 +1,65 @@
+name: ROZZI hardening validation v6
+
+on:
+  push:
+    branches: [codex/rozzifix-batch1]
+
+concurrency:
+  group: rozzifix-hardening-v6
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: marketplace_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/marketplace_test
+      JWT_ACCESS_SECRET: rozzi-ci-access-secret
+      JWT_REFRESH_SECRET: rozzi-ci-refresh-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - name: Apply batch20 hardening
+        run: python3 .github/patches/batch20.py
+      - name: Validate backend
+        run: |
+          cd backend
+          npm ci --no-audit --no-fund
+          npx prisma generate
+          npx prisma migrate deploy
+          npm run build
+          npm test -- --runInBand
+          npm run test:e2e -- --runInBand
+      - name: Validate frontends
+        run: |
+          cd apps/admin && npm ci --no-audit --no-fund && npm run build
+          cd ../customer && npm ci --no-audit --no-fund && npm run build
+          cd ../vendor && npm ci --no-audit --no-fund && npm run build
+          cd ../rider && npm ci --no-audit --no-fund && npm run build
+      - name: Commit validated hardening
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git diff --check
+          rm -f .github/patches/batch20.py
+          git add backend/src/modules/payments/payments.service.ts backend/src/modules/finance/ledger.service.ts .github/patches/batch20.py
+          if git diff --cached --quiet; then echo 'No pending hardening changes.'; else git commit -m 'fix: harden ledger retries and payment locking [skip ci]' && git push origin HEAD:codex/rozzifix-batch1; fi
