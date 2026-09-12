@@ -93,7 +93,7 @@ describe('Admin settings propagation e2e', () => {
     await ledger.onOrderTransitioned({
       orderId: order.id,
       orderNumber: order.orderNumber,
-      customerId,
+      customerId: customer.id,
       vendorId: vendor.id,
       fromStatus: OrderStatus.IN_TRANSIT,
       toStatus: OrderStatus.DELIVERED,
