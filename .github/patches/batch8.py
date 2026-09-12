@@ -8,6 +8,7 @@ def read(path):
 def write(path, text):
     Path(path).write_text(text, encoding='utf-8')
 
+# 1) Atomic wallet debit for order payments.
 path = 'backend/src/modules/payments/payments.service.ts'
 text = read(path)
 start = text.index('      const wallet = await tx.wallet.findUnique', text.index('async payWithWallet'))
@@ -51,11 +52,14 @@ replacement = '''      const wallet = await tx.wallet.findUnique({
 
 '''
 text = text[:start] + replacement + text[end:]
+write(path, text)
 
-# In verifyTopUp, re-read the funding transaction inside the serializable
-# transaction so a stale request cannot credit an already-successful top-up.
+# 2) Top-up verification must re-read the transaction inside the serializable
+# transaction. The request-level status can be stale when two verifications race.
+path = 'backend/src/modules/wallet/wallet.service.ts'
+text = read(path)
 start = text.index('    const result = await this.prisma.$transaction(')
-end = text.index('\n\n    return {\n      success: true,\n      balance: result.balanceAfter,', start)
+end = text.index('\n    return {', start)
 replacement = '''    const result = await this.prisma.$transaction(
       async (tx) => {
         const current = await tx.walletTransaction.findUnique({
