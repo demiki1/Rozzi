@@ -4,6 +4,16 @@ from pathlib import Path
 def replace_once(path, old, new):
     p = Path(path)
     text = p.read_text(encoding='utf-8-sig')
+    if 'dispatch.service.ts' in str(p) and all(
+        marker in text
+        for marker in (
+            'eligibleStatuses: RiderStatus[]',
+            'deliveryAttempts:',
+            'await this.expireStaleOffers(attempt.deliveryId);',
+            'const fresh = await this.prisma.deliveryAttempt.findUnique',
+        )
+    ):
+        return
     if new in text:
         return
     if old not in text:
