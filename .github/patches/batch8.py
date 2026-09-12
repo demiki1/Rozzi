@@ -8,7 +8,6 @@ def read(path):
 def write(path, text):
     Path(path).write_text(text, encoding='utf-8')
 
-# 1) Atomic wallet debit for order payments.
 path = 'backend/src/modules/payments/payments.service.ts'
 text = read(path)
 start = text.index('      const wallet = await tx.wallet.findUnique', text.index('async payWithWallet'))
@@ -54,8 +53,6 @@ replacement = '''      const wallet = await tx.wallet.findUnique({
 text = text[:start] + replacement + text[end:]
 write(path, text)
 
-# 2) Top-up verification must re-read the transaction inside the serializable
-# transaction. The request-level status can be stale when two verifications race.
 path = 'backend/src/modules/wallet/wallet.service.ts'
 text = read(path)
 start = text.index('    const result = await this.prisma.$transaction(')
@@ -160,6 +157,8 @@ describe('wallet money concurrency hardening', () => {
       $transaction: jest.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     };
     const originalFetch = global.fetch;
+    const originalSecret = process.env.PAYSTACK_SECRET_KEY;
+    process.env.PAYSTACK_SECRET_KEY = 'test-secret';
     global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ status: true, data: { status: 'success', amount: 5000, currency: 'NGN' } }) }) as never;
     try {
       const service = new WalletService(prisma as never);
@@ -168,6 +167,8 @@ describe('wallet money concurrency hardening', () => {
       expect(tx.wallet.update).not.toHaveBeenCalled();
     } finally {
       global.fetch = originalFetch;
+      if (originalSecret === undefined) delete process.env.PAYSTACK_SECRET_KEY;
+      else process.env.PAYSTACK_SECRET_KEY = originalSecret;
     }
   });
 });
