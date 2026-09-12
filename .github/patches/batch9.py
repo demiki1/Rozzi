@@ -47,6 +47,17 @@ replacement = '''        const wallet = await tx.wallet.findUnique({
         const after = updatedWallet.balance;
 '''
 text = text[:wallet_start] + replacement + text[ref_start:]
+# Remove the legacy absolute wallet update left immediately after the withdrawal reference.
+method_end = text.index('\n  }', ref_start)
+legacy = '''        await tx.wallet.update({
+          where: { id: wallet.id },
+          data: { balance: after },
+        });
+
+'''
+legacy_pos = text.find(legacy, ref_start, method_end)
+if legacy_pos >= 0:
+    text = text[:legacy_pos] + text[legacy_pos + len(legacy):]
 write(path, text)
 
 Path('backend/test/unit/wallet-withdrawal-concurrency.spec.ts').write_text(r'''import { ConflictException } from '@nestjs/common';
