@@ -119,6 +119,10 @@ export class PaymentsService {
   // same payment lifecycle as Paystack/Flutterwave.
   async payWithWallet(customerId: string, orderId: string) {
     const result = await this.prisma.$transaction(async (tx) => {
+      // Serialize wallet payments for the same order so two concurrent
+      // requests cannot both observe an unpaid order and debit the wallet twice.
+      await tx.$queryRaw`SELECT id FROM "Order" WHERE id = ${orderId} FOR UPDATE`;
+
       const order = await tx.order.findUnique({
         where: { id: orderId },
       });

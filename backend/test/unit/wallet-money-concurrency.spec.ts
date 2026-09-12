@@ -6,6 +6,7 @@ describe('wallet money concurrency hardening', () => {
   it('uses an atomic conditional debit for concurrent wallet order payments', async () => {
     const tx = {
       order: { findUnique: jest.fn().mockResolvedValue({ id: 'order-1', customerId: 'customer-1', status: 'PENDING_PAYMENT', totalAmount: 5000, orderNumber: 'RZW-1' }) },
+      $queryRaw: jest.fn().mockResolvedValue([]),
       payment: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn().mockResolvedValue({ id: 'payment-1', amount: 5000 }) },
       wallet: {
         findUnique: jest.fn().mockResolvedValue({ id: 'wallet-1', balance: 5000, isActive: true }),
@@ -20,6 +21,7 @@ describe('wallet money concurrency hardening', () => {
 
     await service.payWithWallet('customer-1', 'order-1');
 
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
     expect(tx.wallet.updateMany).toHaveBeenCalledWith({
       where: { id: 'wallet-1', isActive: true, balance: { gte: 5000 } },
       data: { balance: { decrement: 5000 } },
@@ -31,6 +33,7 @@ describe('wallet money concurrency hardening', () => {
   it('rejects the wallet order payment when the atomic debit loses the race', async () => {
     const tx = {
       order: { findUnique: jest.fn().mockResolvedValue({ id: 'order-1', customerId: 'customer-1', status: 'PENDING_PAYMENT', totalAmount: 5000, orderNumber: 'RZW-1' }) },
+      $queryRaw: jest.fn().mockResolvedValue([]),
       payment: { findFirst: jest.fn().mockResolvedValue(null) },
       wallet: { findUnique: jest.fn().mockResolvedValue({ id: 'wallet-1', balance: 5000, isActive: true }), updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
     };
