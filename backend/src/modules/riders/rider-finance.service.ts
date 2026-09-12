@@ -29,16 +29,6 @@ export class RiderFinanceService {
     return rider;
   }
 
-  /**
-   * Rider earnings are strictly delivery earnings.
-   *
-   * Only LedgerEntryType.RIDER_EARNING represents money earned
-   * from completed deliveries.
-   *
-   * Adjustments, bonuses, tips, referral rewards, challenges,
-   * loyalty rewards, XP-related rewards, or other credits must
-   * never be treated as Rider earnings.
-   */
   private async deliveryEarningEntries(riderId: string) {
     return this.prisma.ledgerEntry.findMany({
       where: {
@@ -78,13 +68,6 @@ export class RiderFinanceService {
       }),
     ]);
 
-    /*
-     * Ledger balance still represents the Rider's actual ledger
-     * balance because payouts and legitimate reversals must remain
-     * accounted for.
-     *
-     * However, earnings metrics below only use RIDER_EARNING.
-     */
     const balance = entries.reduce((sum, entry) => sum + entry.amount, 0);
 
     const pendingWithdrawals = payouts
@@ -131,22 +114,13 @@ export class RiderFinanceService {
 
     return {
       riderId: rider.id,
-
       availableBalance: available,
       ledgerBalance: balance,
       pendingWithdrawals,
-
-      /*
-       * IMPORTANT:
-       * This is delivery income only.
-       */
       totalEarned,
-
       todayEarnings,
       weekEarnings,
-
       cashBalance,
-
       bankAccount: {
         bankName: rider.bankName,
         accountName: rider.bankAccountName,
@@ -154,7 +128,6 @@ export class RiderFinanceService {
           ? rider.bankAccountNumber.slice(-4)
           : null,
       },
-
       recentTransactions: entries.slice(0, 10),
       recentPayouts: payouts.slice(0, 10),
     };
@@ -193,17 +166,6 @@ export class RiderFinanceService {
       orderBy: { createdAt: 'asc' },
     });
 
-    /*
-     * Only positive RIDER_EARNING entries count as earnings.
-     *
-     * There is deliberately no:
-     * - bonuses field
-     * - tips field
-     * - referral rewards
-     * - challenge rewards
-     * - loyalty rewards
-     * - adjustment rewards
-     */
     const deliveryEarnings = entries.filter((entry) => entry.amount > 0);
 
     const total = entries.reduce((sum, entry) => sum + entry.amount, 0);
@@ -227,22 +189,13 @@ export class RiderFinanceService {
     return {
       from: start.toISOString(),
       to: end.toISOString(),
-
-      /*
-       * Total delivery earnings after any RIDER_EARNING
-       * reversals recorded in the same ledger type.
-       */
       total,
-
       deliveryEarnings: deliveryEarningsTotal,
-
       transactionCount: entries.length,
-
       daily: Array.from(daily, ([date, amount]) => ({
         date,
         amount,
       })),
-
       entries,
     };
   }
@@ -272,17 +225,10 @@ export class RiderFinanceService {
 
   async requestPayout(ownerUserId: string, amount: number) {
     const rider = await this.rider(ownerUserId);
-    const overview = await this.overview(ownerUserId);
 
     if (!Number.isInteger(amount) || amount <= 0) {
       throw new BadRequestException(
         'Payout amount must be a positive whole number of kobo.',
-      );
-    }
-
-    if (amount > overview.availableBalance) {
-      throw new BadRequestException(
-        'Requested payout exceeds your available balance.',
       );
     }
 
@@ -296,19 +242,50 @@ export class RiderFinanceService {
       );
     }
 
-    const reference = `RZ-RP-${Date.now()}-${rider.id
-      .slice(0, 8)
-      .toUpperCase()}`;
+    const payout = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "riders" WHERE id = ${rider.id} FOR UPDATE`;
 
-    const payout = await this.prisma.riderPayout.create({
-      data: {
-        riderId: rider.id,
-        amount,
-        reference,
-        bankName: rider.bankName,
-        accountName: rider.bankAccountName,
-        accountNumberLast4: rider.bankAccountNumber.slice(-4),
-      },
+      const ledgerRows = await tx.ledgerEntry.findMany({
+        where: {
+          accountType: LedgerAccountType.RIDER,
+          accountId: rider.id,
+        },
+        select: { amount: true },
+      });
+      const balance = ledgerRows.reduce((sum, entry) => sum + entry.amount, 0);
+
+      const pending = await tx.riderPayout.aggregate({
+        where: {
+          riderId: rider.id,
+          status: {
+            in: [RiderPayoutStatus.REQUESTED, RiderPayoutStatus.PROCESSING],
+          },
+        },
+        _sum: { amount: true },
+      });
+      const pendingAmount = pending._sum.amount ?? 0;
+      const available = Math.max(0, balance - pendingAmount);
+
+      if (amount > available) {
+        throw new BadRequestException(
+          'Requested payout exceeds your available balance.',
+        );
+      }
+
+      const reference = `RZ-RP-${Date.now()}-${rider.id
+        .slice(0, 8)
+        .toUpperCase()}`;
+
+      return tx.riderPayout.create({
+        data: {
+          riderId: rider.id,
+          amount,
+          reference,
+          bankName: rider.bankName,
+          accountName: rider.bankAccountName,
+          accountNumberLast4: rider.bankAccountNumber!.slice(-4),
+        },
+      });
     });
 
     await this.audit.record({
@@ -318,7 +295,7 @@ export class RiderFinanceService {
       entityId: payout.id,
       after: {
         amount,
-        reference,
+        reference: payout.reference,
       },
     });
 
@@ -358,38 +335,42 @@ export class RiderFinanceService {
       deliveryId = delivery.id;
     }
 
-    const current = await this.prisma.riderCashTransaction.findMany({
-      where: { riderId: rider.id },
-    });
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "riders" WHERE id = ${rider.id} FOR UPDATE`;
 
-    const balance = current.reduce(
-      (sum, transaction) =>
-        sum +
-        (transaction.type === RiderCashTransactionType.REMITTANCE
-          ? -transaction.amount
-          : transaction.amount),
-      0,
-    );
+      const current = await tx.riderCashTransaction.findMany({
+        where: { riderId: rider.id },
+      });
 
-    if (
-      type === RiderCashTransactionType.REMITTANCE &&
-      amount > balance
-    ) {
-      throw new BadRequestException(
-        'Remittance exceeds cash on hand.',
+      const balance = current.reduce(
+        (sum, transaction) =>
+          sum +
+          (transaction.type === RiderCashTransactionType.REMITTANCE
+            ? -transaction.amount
+            : transaction.amount),
+        0,
       );
-    }
 
-    return this.prisma.riderCashTransaction.create({
-      data: {
-        riderId: rider.id,
-        type,
-        amount,
-        orderId,
-        deliveryId,
-        description,
-        evidenceUrl,
-      },
+      if (
+        type === RiderCashTransactionType.REMITTANCE &&
+        amount > balance
+      ) {
+        throw new BadRequestException(
+          'Remittance exceeds cash on hand.',
+        );
+      }
+
+      return tx.riderCashTransaction.create({
+        data: {
+          riderId: rider.id,
+          type,
+          amount,
+          orderId,
+          deliveryId,
+          description,
+          evidenceUrl,
+        },
+      });
     });
   }
 
