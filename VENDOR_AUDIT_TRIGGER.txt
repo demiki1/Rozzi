@@ -1,1 +1,1 @@
-Temporary validation trigger; remove after validation.
+Temporary trigger; remove after validation.
