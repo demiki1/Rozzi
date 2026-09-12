@@ -14,6 +14,14 @@ def replace_once(path, old, new):
         )
     ):
         return
+    if 'rider-finance.service.ts' in str(p) and all(
+        marker in text
+        for marker in (
+            'const payout = await this.prisma.$transaction(async (tx)',
+            'SELECT id FROM "riders" WHERE id = ${rider.id} FOR UPDATE',
+        )
+    ):
+        return
     if new in text:
         return
     if old not in text:
