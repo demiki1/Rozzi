@@ -41,7 +41,7 @@ describe('Admin hardening e2e', () => {
   }
 
   function signToken(user: { id: string; role: UserRole }) {
-    return jwt.sign({ sub: user.id, role: user.role });
+    return jwt.sign({ sub: user.id, role: user.role }, { secret: process.env.JWT_ACCESS_SECRET });
   }
 
   async function createUser(role: UserRole, label: string) {
