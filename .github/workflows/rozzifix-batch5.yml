@@ -4,10 +4,6 @@ on:
   push:
     branches: [codex/rozzifix-batch1]
 
-concurrency:
-  group: rozzifix-hardening
-  cancel-in-progress: true
-
 permissions:
   contents: write
 
