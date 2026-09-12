@@ -22,4 +22,6 @@ replace_once(
     '        reference: payout.reference,\n      },\n    });\n\n    return payout;',
 )
 
+# Production rider fixes are already persisted on the branch; this patch remains
+# a validation guard so the audit workflow can still verify the intended shape.
 print('batch32 rider finance audit patch applied')
