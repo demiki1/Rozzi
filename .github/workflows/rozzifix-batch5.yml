@@ -4,6 +4,10 @@ on:
   push:
     branches: [codex/rozzifix-batch1]
 
+concurrency:
+  group: rozzifix-hardening-v5
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -23,7 +27,7 @@ jobs:
         options: >-
           --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
     env:
-      NODE_ENV: development
+      NODE_ENV: test
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/marketplace_test
       JWT_ACCESS_SECRET: rozzi-ci-access-secret
       JWT_REFRESH_SECRET: rozzi-ci-refresh-secret
@@ -36,7 +40,7 @@ jobs:
           cache-dependency-path: backend/package-lock.json
       - name: Apply corrected concurrency hardening
         run: python3 .github/patches/batch19.py
-      - name: Validate full repository
+      - name: Validate backend
         run: |
           cd backend
           npm ci --no-audit --no-fund
@@ -45,7 +49,9 @@ jobs:
           npm run build
           npm test -- --runInBand
           npm run test:e2e -- --runInBand
-          cd ../apps/admin && npm ci --no-audit --no-fund && npm run build
+      - name: Validate frontends
+        run: |
+          cd apps/admin && npm ci --no-audit --no-fund && npm run build
           cd ../customer && npm ci --no-audit --no-fund && npm run build
           cd ../vendor && npm ci --no-audit --no-fund && npm run build
           cd ../rider && npm ci --no-audit --no-fund && npm run build
