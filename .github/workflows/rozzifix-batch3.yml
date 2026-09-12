@@ -1,5 +1,5 @@
-# Batch 11 wallet refund concurrency hardening. Full validation is mandatory; final fixture correction 2.
-name: ROZZI batch 11 hardening
+# Batch 12 promotion scope hardening. Full validation is mandatory.
+name: ROZZI batch 12 hardening
 
 on:
   push:
@@ -35,8 +35,32 @@ jobs:
           node-version: 20
           cache: npm
           cache-dependency-path: backend/package-lock.json
-      - name: Apply wallet refund hardening
-        run: python3 .github/patches/batch11.py
+      - name: Apply promotion scope hardening
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('backend/src/modules/wallet/wallet.service.ts')
+          text = path.read_text(encoding='utf-8-sig')
+          old = '''        OR: [
+          { vendorId: null },
+          { vendorId: dto.vendorId || undefined },
+        ],'''
+          new = '''        ...(dto.vendorId
+          ? {
+              OR: [
+                { vendorId: null },
+                { vendorId: dto.vendorId },
+              ],
+            }
+          : { vendorId: null }),'''
+          if old not in text:
+              raise SystemExit('promotion scope block not found')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          test_path = Path('backend/test/unit/wallet-promotion-scope.spec.ts')
+          test_path.write_text('''import { WalletService } from '../../src/modules/wallet/wallet.service';\n\ndescribe('WalletService promotion scope', () => {\n  const makeService = (promotion: any) => {\n    const prisma = {\n      promotion: {\n        findFirst: jest.fn().mockResolvedValue(promotion),\n      },\n      promotionRedemption: {\n        count: jest.fn().mockResolvedValue(0),\n      },\n    };\n    return { service: new WalletService(prisma as never), prisma };\n  };\n\n  const promotion = {\n    id: 'promotion-1',\n    code: 'SAVE10',\n    name: 'Save 10',\n    type: 'PERCENTAGE',\n    value: 10,\n    maxDiscount: null,\n    minOrderAmount: 0,\n    usageLimit: null,\n    usageCount: 0,\n    perCustomerLimit: null,\n    vendorId: 'vendor-1',\n    isActive: true,\n    startsAt: new Date(Date.now() - 1000),\n    endsAt: new Date(Date.now() + 100000),\n  };\n\n  it('only considers global promotions when vendorId is omitted', async () => {\n    const { service, prisma } = makeService(promotion);\n\n    await service.applyPromotion('customer-1', {\n      code: 'SAVE10',\n      subtotalAmount: 10000,\n    });\n\n    expect(prisma.promotion.findFirst).toHaveBeenCalledWith({\n      where: {\n        code: 'SAVE10',\n        isActive: true,\n        startsAt: { lte: expect.any(Date) },\n        endsAt: { gte: expect.any(Date) },\n        vendorId: null,\n      },\n    });\n  });\n\n  it('allows a vendor-scoped promotion only for that vendor or global fallback', async () => {\n    const { service, prisma } = makeService(promotion);\n\n    await service.applyPromotion('customer-1', {\n      code: 'SAVE10',\n      subtotalAmount: 10000,\n      vendorId: 'vendor-1',\n    });\n\n    expect(prisma.promotion.findFirst).toHaveBeenCalledWith({\n      where: {\n        code: 'SAVE10',\n        isActive: true,\n        startsAt: { lte: expect.any(Date) },\n        endsAt: { gte: expect.any(Date) },\n        OR: [\n          { vendorId: null },\n          { vendorId: 'vendor-1' },\n        ],\n      },\n    });\n  });\n});\n''', encoding='utf-8')
+          PY
       - name: Validate full repository
         run: |
           cd backend
@@ -50,11 +74,10 @@ jobs:
           cd ../customer && npm ci --no-audit --no-fund && npm run build
           cd ../vendor && npm ci --no-audit --no-fund && npm run build
           cd ../rider && npm ci --no-audit --no-fund && npm run build
-      - name: Commit validated batch 11
+      - name: Commit validated batch 12
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git diff --check
-          rm -f .github/patches/batch11.py
-          git add backend/src/modules/payments/payments.service.ts backend/test/unit/refund-concurrency.spec.ts .github/workflows/rozzifix-batch3.yml .github/patches/batch11.py
-          if git diff --cached --quiet; then echo 'No batch 11 changes.'; else git commit -m 'fix: harden wallet refund concurrency [skip ci]' && git push; fi
+          git add backend/src/modules/wallet/wallet.service.ts backend/test/unit/wallet-promotion-scope.spec.ts .github/workflows/rozzifix-batch3.yml
+          if git diff --cached --quiet; then echo 'No batch 12 changes.'; else git commit -m 'fix: harden promotion vendor scope [skip ci]' && git push; fi
