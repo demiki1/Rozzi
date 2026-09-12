@@ -71,6 +71,7 @@ jobs:
           cd apps/customer && npm ci --no-audit --no-fund && NODE_ENV=production npm run build
           cd ../vendor && npm ci --no-audit --no-fund && NODE_ENV=production npm run build
           cd ../rider && npm ci --no-audit --no-fund && NODE_ENV=production npm run build
+      # This push-triggered job validates the actual branch tree before persisting production fixes.
       - name: Persist validated production hardening
         if: github.event_name == 'push'
         run: |
