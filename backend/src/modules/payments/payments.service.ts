@@ -959,9 +959,10 @@ export class PaymentsService {
       };
     }
 
-    // Idempotency: if we've already recorded this exact (provider,
-    // reference, eventType) combination, do nothing further. A duplicate
-    // webhook delivery must never double-process a payment (§70).
+    // Record the event for audit/idempotency, but do not treat a duplicate
+    // event row as proof that verification succeeded. If the first delivery
+    // recorded the event and then provider verification failed or timed out,
+    // the provider may retry the same event and we must be able to verify it.
     try {
       await this.prisma.paymentEvent.create({
         data: {
@@ -973,17 +974,13 @@ export class PaymentsService {
         },
       });
     } catch (err: any) {
-      if (err.code === 'P2002') {
-        this.logger.log(
-          `Duplicate payment event ignored: ${reference} / ${eventType}`,
-        );
-
-        return {
-          status: 'already_processed',
-        };
+      if (err.code !== 'P2002') {
+        throw err;
       }
 
-      throw err;
+      this.logger.log(
+        `Duplicate payment event received: ${reference} / ${eventType}; retrying verification if still pending.`,
+      );
     }
 
     if (payment.status !== PaymentStatus.PENDING) {
