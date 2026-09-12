@@ -1163,6 +1163,9 @@ const orderCommissionRateSnapshot =
     const cancelled =
       await this.prisma.$transaction(
         async (tx) => {
+          await tx.$queryRaw`
+            SELECT id FROM "orders" WHERE id = ${orderId} FOR UPDATE
+          `;
           const current =
             await tx.order.findUnique({
               where: { id: orderId },
@@ -1343,6 +1346,9 @@ const orderCommissionRateSnapshot =
     const cancelled =
       await this.prisma.$transaction(
         async (tx) => {
+          await tx.$queryRaw`
+            SELECT id FROM "orders" WHERE id = ${orderId} FOR UPDATE
+          `;
           const current =
             await tx.order.findUnique({
               where: { id: orderId },
@@ -1749,29 +1755,19 @@ const orderCommissionRateSnapshot =
       toStatus,
     );
 
-    const [updated] =
-      await this.prisma.$transaction([
-        this.prisma.order.update({
-          where: {
-            id: orderId,
-          },
-          data: {
-            status: toStatus,
-          },
-        }),
-
-        this.prisma.orderStatusHistory.create(
-          {
-            data: {
-              orderId,
-              fromStatus:
-                order.status,
-              toStatus,
-              changedByUserId,
-            },
-          },
-        ),
-      ]);
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`
+        SELECT id FROM "orders" WHERE id = ${orderId} FOR UPDATE
+      `;
+      const current = await tx.order.findUnique({ where: { id: orderId } });
+      if (!current) throw new NotFoundException('Order not found.');
+      this.stateMachine.assertValidTransition(current.status, toStatus);
+      const changed = await tx.order.update({ where: { id: orderId }, data: { status: toStatus } });
+      await tx.orderStatusHistory.create({
+        data: { orderId, fromStatus: current.status, toStatus, changedByUserId },
+      });
+      return changed;
+    });
 
     // Fire-and-forget from the caller's perspective:
     // emitting is synchronous but listeners

@@ -96,20 +96,37 @@ export class PaymentsService {
       }/payments/callback?reference=${encodeURIComponent(reference)}`,
     });
 
-    await this.prisma.payment.create({
-      data: {
-        orderId: order.id,
-        provider: provider.name as PaymentProviderName,
-        reference: result.reference,
-        amount: order.totalAmount,
-        status: PaymentStatus.PENDING,
-        authorizationUrl: result.authorizationUrl,
-      },
+    const persisted = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`
+        SELECT id FROM "orders" WHERE id = ${orderId} FOR UPDATE
+      `;
+      const currentOrder = await tx.order.findUnique({ where: { id: orderId } });
+      if (!currentOrder || currentOrder.customerId !== customerId) {
+        throw new NotFoundException('Order not found.');
+      }
+      if (currentOrder.status !== OrderStatus.PENDING_PAYMENT) {
+        throw new BadRequestException('This order is not awaiting payment.');
+      }
+      const currentPending = await tx.payment.findFirst({
+        where: { orderId, status: PaymentStatus.PENDING },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (currentPending?.authorizationUrl) return currentPending;
+      return tx.payment.create({
+        data: {
+          orderId: currentOrder.id,
+          provider: provider.name as PaymentProviderName,
+          reference: result.reference,
+          amount: currentOrder.totalAmount,
+          status: PaymentStatus.PENDING,
+          authorizationUrl: result.authorizationUrl,
+        },
+      });
     });
 
     return {
-      authorizationUrl: result.authorizationUrl,
-      reference: result.reference,
+      authorizationUrl: persisted.authorizationUrl ?? result.authorizationUrl,
+      reference: persisted.reference,
     };
   }
 
@@ -121,7 +138,7 @@ export class PaymentsService {
     const result = await this.prisma.$transaction(async (tx) => {
       // Serialize wallet payments for the same order so two concurrent
       // requests cannot both observe an unpaid order and debit the wallet twice.
-      await tx.$queryRaw`SELECT id FROM "Order" WHERE id = ${orderId} FOR UPDATE`;
+      await tx.$queryRaw`SELECT id FROM "orders" WHERE id = ${orderId} FOR UPDATE`;
 
       const order = await tx.order.findUnique({
         where: { id: orderId },
@@ -364,7 +381,7 @@ export class PaymentsService {
     // concurrent admin requests can both observe the same remaining balance
     // and create refunds whose combined amount exceeds the original payment.
     // The lock also makes the pending-refund check atomic with allocation.
-    const refund = await this.prisma.$transaction(async (tx) => {
+    const allocation = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`
         SELECT id FROM "Payment" WHERE id = ${payment.id} FOR UPDATE
       `;
@@ -406,10 +423,10 @@ export class PaymentsService {
       });
 
       if (existing) {
-        return existing;
+        return { refund: existing, created: false };
       }
 
-      return tx.refund.create({
+      return { refund: await tx.refund.create({
         data: {
           paymentId: payment.id,
           orderId,
@@ -418,15 +435,20 @@ export class PaymentsService {
           requestedByUserId: actorId,
           status: 'PROCESSING',
         },
-      });
+      }), created: true };
     });
+
+    const refund = allocation.refund;
+    if (!allocation.created && payment.provider !== PaymentProviderName.WALLET) {
+      return refund;
+    }
 
     // Wallet payments are refunded internally: credit the customer's wallet
     // atomically with the refund record. External providers remain pending
     // until their provider-side refund is confirmed.
     if (payment.provider === PaymentProviderName.WALLET) {
       const updated = await this.prisma.$transaction(async (tx) => {
-        await tx.$queryRaw`SELECT id FROM "Refund" WHERE id = ${refund.id} FOR UPDATE`;
+        await tx.$queryRaw`SELECT id FROM "refunds" WHERE id = ${refund.id} FOR UPDATE`;
 
         const current = await tx.refund.findUnique({
           where: { id: refund.id },
@@ -453,7 +475,7 @@ export class PaymentsService {
         // refund duplication; this wallet-row lock protects the wallet ledger
         // from stale absolute-balance writes.
         await tx.$queryRaw`
-          SELECT id FROM "Wallet" WHERE id = ${wallet.id} FOR UPDATE
+          SELECT id FROM "wallets" WHERE id = ${wallet.id} FOR UPDATE
         `;
 
         const currentWallet = await tx.wallet.findUnique({
