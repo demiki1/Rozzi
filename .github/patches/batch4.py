@@ -36,24 +36,13 @@ old = """        async (tx) => {
           ) {"""
 new = """        async (tx) => {
           if (promotion) {
-            await tx.$queryRaw`
-              SELECT id FROM \"Promotion\" WHERE id = ${promotion.id} FOR UPDATE
-            `;
-
-            if (promotion.perCustomerLimit) {
-              const used = await tx.order.count({
-                where: {
-                  customerId,
-                  promotionId: promotion.id,
-                },
-              });
-
-              if (used >= promotion.perCustomerLimit) {
-                throw new BadRequestException(
-                  'You have reached this promotion limit.',
-                );
-              }
-            }
+            await this.promotionsService.consumePromotion(
+              tx,
+              promotion.id,
+              customerId,
+              discountedMerchandiseSubtotal,
+              promotion.discount,
+            );
           }
 
           if (
