@@ -237,6 +237,7 @@ export class OrdersService {
 
       if (
         !deliveryZone ||
+        !deliveryZone.isActive ||
         deliveryZone.serviceAreaId !== dto.serviceAreaId
       ) {
         throw new BadRequestException(
@@ -547,11 +548,14 @@ const orderCommissionRateSnapshot =
         );
       }
 
-      if (
-        start &&
-        end &&
-        !(hhmm >= start && hhmm <= end)
-      ) {
+      const withinAvailability =
+        !start || !end
+          ? true
+          : start <= end
+            ? hhmm >= start && hhmm <= end
+            : hhmm >= start || hhmm <= end;
+
+      if (!withinAvailability) {
         throw new BadRequestException(
           `${item.product.name} is only available from ${start} to ${end}.`,
         );

@@ -28,6 +28,7 @@ function buildPrismaMock(opts: { existingCartVendorId: string | null; productVen
       findUnique: jest.fn(async () => cart),
       create: jest.fn(async () => cart),
       update: jest.fn(async ({ data }: any) => ({ ...cart, ...data })),
+      updateMany: jest.fn(async ({ data }: any) => ({ count: 1 })),
     },
     inventory: {
       findUnique: jest.fn(async () => product.inventory),
@@ -50,8 +51,14 @@ describe('CartService — single-vendor-per-cart (§42)', () => {
       service.addItem('customer-1', { productId: 'product-1', quantity: 1 }),
     ).resolves.toBeDefined();
 
-    expect(prisma.cart.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { vendorId: 'vendor-A' } }),
+    expect(prisma.cart.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: 'cart-1',
+          OR: [{ vendorId: null }, { vendorId: 'vendor-A' }],
+        }),
+        data: { vendorId: 'vendor-A' },
+      }),
     );
   });
 
@@ -72,7 +79,19 @@ describe('CartService — single-vendor-per-cart (§42)', () => {
       service.addItem('customer-1', { productId: 'product-1', quantity: 1 }),
     ).rejects.toThrow(ConflictException);
 
-    expect(prisma.cart.update).not.toHaveBeenCalled();
+    expect(prisma.cart.updateMany).not.toHaveBeenCalled();
+    expect(prisma.cartItem.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects a concurrent vendor claim when the cart was claimed by another vendor first', async () => {
+    const prisma = buildPrismaMock({ existingCartVendorId: null, productVendorId: 'vendor-A' });
+    prisma.cart.updateMany.mockResolvedValue({ count: 0 });
+    const service = new CartService(prisma as any);
+
+    await expect(
+      service.addItem('customer-1', { productId: 'product-1', quantity: 1 }),
+    ).rejects.toMatchObject({ response: { code: 'CART_VENDOR_MISMATCH' } });
+
     expect(prisma.cartItem.create).not.toHaveBeenCalled();
   });
 
