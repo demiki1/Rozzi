@@ -7,7 +7,8 @@ function buildPrismaMock(opts: { existingCartVendorId: string | null; productVen
     customerId: 'customer-1',
     vendorId: opts.existingCartVendorId,
     items: [],
-    vendor: null,
+    // Keep the fixture shape aligned with CartService.cartInclude for an occupied cart.
+    vendor: opts.existingCartVendorId ? { id: opts.existingCartVendorId } : null,
   };
   const product = {
     id: 'product-1',
