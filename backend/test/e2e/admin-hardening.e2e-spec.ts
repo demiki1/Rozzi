@@ -1,6 +1,7 @@
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { AdminRole, OrderDeliveryType, OrderStatus, UserRole } from '@prisma/client';
+import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import request from 'supertest';
 
@@ -15,6 +16,7 @@ function tokenFrom(response: request.Response) {
 describe('Admin hardening e2e', () => {
   let app: INestApplication;
   let prisma: PrismaService;
+  let jwt: JwtService;
   let ledger: LedgerService;
   let superToken: string;
   let financeToken: string;
@@ -26,28 +28,32 @@ describe('Admin hardening e2e', () => {
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
   const password = 'AdminHardening!123';
 
-  async function createUser(role: UserRole, label: string, adminRole?: AdminRole) {
+  async function createAdmin(adminRole: AdminRole, label: string) {
+    return prisma.user.create({
+      data: {
+        fullName: `Admin ${label}`,
+        email: `${label.toLowerCase()}-${unique}@example.com`,
+        passwordHash: await bcrypt.hash(password, 4),
+        role: UserRole.ADMIN,
+        adminRole,
+      },
+    });
+  }
+
+  function signToken(user: { id: string; role: UserRole }) {
+    return jwt.sign({ sub: user.id, role: user.role });
+  }
+
+  async function createUser(role: UserRole, label: string) {
     const user = await prisma.user.create({
       data: {
         fullName: label,
         email: `${label.toLowerCase().replace(/\s+/g, '-')}-${unique}@example.com`,
         passwordHash: await bcrypt.hash(password, 4),
         role,
-        adminRole,
       },
     });
-
-    const response = await request(app.getHttpServer())
-      .post('/api/auth/login')
-      .send({ email: user.email, password });
-
-    expect(response.status).toBe(201);
-    expect(tokenFrom(response)).toBeTruthy();
-    return { user, token: tokenFrom(response) };
-  }
-
-  async function createAdmin(adminRole: AdminRole, label: string) {
-    return createUser(UserRole.ADMIN, `Admin ${label}`, adminRole);
+    return { user, token: signToken(user) };
   }
 
   beforeAll(async () => {
@@ -55,15 +61,22 @@ describe('Admin hardening e2e', () => {
     app = moduleRef.createNestApplication();
     await app.init();
     prisma = app.get(PrismaService);
+    jwt = app.get(JwtService);
     ledger = app.get(LedgerService);
 
-    superToken = (await createAdmin(AdminRole.SUPER_ADMIN, 'Super')).token;
-    financeToken = (await createAdmin(AdminRole.FINANCE_ADMIN, 'Finance')).token;
-    supportToken = (await createAdmin(AdminRole.SUPPORT_ADMIN, 'Support')).token;
-    vendorAdminToken = (await createAdmin(AdminRole.VENDOR_ADMIN, 'Vendor')).token;
-    riderAdminToken = (await createAdmin(AdminRole.RIDER_ADMIN, 'Rider')).token;
-    contentToken = (await createAdmin(AdminRole.CONTENT_ADMIN, 'Content')).token;
-    operationsToken = (await createAdmin(AdminRole.OPERATIONS_ADMIN, 'Operations')).token;
+    const superAdmin = await createAdmin(AdminRole.SUPER_ADMIN, 'Super');
+    const login = await request(app.getHttpServer())
+      .post('/api/auth/login')
+      .send({ email: superAdmin.email, password });
+    expect(login.status).toBe(201);
+    superToken = tokenFrom(login);
+
+    financeToken = signToken(await createAdmin(AdminRole.FINANCE_ADMIN, 'Finance'));
+    supportToken = signToken(await createAdmin(AdminRole.SUPPORT_ADMIN, 'Support'));
+    vendorAdminToken = signToken(await createAdmin(AdminRole.VENDOR_ADMIN, 'Vendor'));
+    riderAdminToken = signToken(await createAdmin(AdminRole.RIDER_ADMIN, 'Rider'));
+    contentToken = signToken(await createAdmin(AdminRole.CONTENT_ADMIN, 'Content'));
+    operationsToken = signToken(await createAdmin(AdminRole.OPERATIONS_ADMIN, 'Operations'));
   });
 
   afterAll(async () => {
