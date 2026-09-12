@@ -9,9 +9,7 @@ import { AppModule } from '../../src/app.module';
 import { PrismaService } from '../../src/config/prisma.service';
 import { LedgerService } from '../../src/modules/finance/ledger.service';
 
-function tokenFrom(response: request.Response) {
-  return response.body?.accessToken as string;
-}
+function tokenFrom(response: request.Response) { return response.body?.accessToken as string; }
 
 describe('Admin hardening e2e', () => {
   let app: INestApplication;
@@ -31,11 +29,7 @@ describe('Admin hardening e2e', () => {
   async function createAdmin(adminRole: AdminRole, label: string) {
     return prisma.user.create({ data: { fullName: `Admin ${label}`, email: `${label.toLowerCase()}-${unique}@example.com`, passwordHash: await bcrypt.hash(password, 4), role: UserRole.ADMIN, adminRole } });
   }
-
-  function signToken(user: { id: string; role: UserRole }) {
-    return jwt.sign({ sub: user.id, role: user.role }, { secret: process.env.JWT_ACCESS_SECRET });
-  }
-
+  function signToken(user: { id: string; role: UserRole }) { return jwt.sign({ sub: user.id, role: user.role }, { secret: process.env.JWT_ACCESS_SECRET }); }
   async function createUser(role: UserRole, label: string) {
     const user = await prisma.user.create({ data: { fullName: label, email: `${label.toLowerCase().replace(/\s+/g, '-')}-${unique}@example.com`, passwordHash: await bcrypt.hash(password, 4), role } });
     return { user, token: signToken(user) };
@@ -48,12 +42,10 @@ describe('Admin hardening e2e', () => {
     prisma = app.get(PrismaService);
     jwt = app.get(JwtService);
     ledger = app.get(LedgerService);
-
     const superAdmin = await createAdmin(AdminRole.SUPER_ADMIN, 'Super');
     const login = await request(app.getHttpServer()).post('/api/auth/login').send({ email: superAdmin.email, password });
     expect(login.status).toBe(201);
     superToken = tokenFrom(login);
-
     financeToken = signToken(await createAdmin(AdminRole.FINANCE_ADMIN, 'Finance'));
     supportToken = signToken(await createAdmin(AdminRole.SUPPORT_ADMIN, 'Support'));
     vendorAdminToken = signToken(await createAdmin(AdminRole.VENDOR_ADMIN, 'Vendor'));
@@ -93,6 +85,9 @@ describe('Admin hardening e2e', () => {
     const country = await prisma.location.create({ data: { type: 'COUNTRY', name: `AdminHardeningCountry-${unique}` } });
     const state = await prisma.location.create({ data: { type: 'STATE', name: `AdminHardeningState-${unique}`, parentId: country.id } });
     const area = await prisma.serviceArea.create({ data: { locationId: state.id, name: `AdminHardeningArea-${unique}`, status: 'ACTIVE', minimumOrderAmount: 0, baseDeliveryFee: 1000, serviceFeeAmount: 0 } });
+    const pricingSeed = await request(app.getHttpServer()).patch(`/api/admin/pricing/service-areas/${area.id}`).set('Authorization', `Bearer ${superToken}`).send({ serviceFeeRatePercent: 0, serviceFeeCapAmount: 100000, baseDeliveryFee: 1000, perKmDeliveryFee: 0, deliveryRadiusKm: 8, riderPayoutRatePercent: 92, surgeEnabled: false, surgeLevel: 'NORMAL', surgeSlightlyHighAmount: 0, surgeHighAmount: 0, surgeVeryHighAmount: 0 });
+    expect(pricingSeed.status).toBe(200);
+
     const vendorOwner = await createUser(UserRole.VENDOR, 'Admin Hardening Vendor');
     const vendorType = await prisma.vendorType.create({ data: { name: `AdminHardeningType-${unique}` } });
     const vendor = await prisma.vendor.create({ data: { ownerUserId: vendorOwner.user.id, vendorTypeId: vendorType.id, storeName: `Admin Hardening Store ${unique}`, status: 'APPROVED', isOpen: true, supportedDeliveryModels: [DeliveryModel.PLATFORM_DELIVERY, DeliveryModel.CUSTOMER_PICKUP] } });
@@ -139,6 +134,7 @@ describe('Admin hardening e2e', () => {
     await prisma.setting.upsert({ where: { key: 'ordersEnabled' }, update: { value: beforeOrdersEnabled }, create: { key: 'ordersEnabled', value: beforeOrdersEnabled } });
     await prisma.commissionConfig.updateMany({ where: { isActive: true }, data: { isActive: false } });
     await prisma.commissionConfig.create({ data: { defaultRatePercent: commissionBeforeRate, isActive: true } });
+    void pricingSeed;
   });
 
   it('propagates the Admin UI rider payout setting into the order snapshot and delivered ledger entry', async () => {
