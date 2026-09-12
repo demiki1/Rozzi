@@ -684,6 +684,9 @@ const orderCommissionRateSnapshot =
                 commissionRateSnapshot:
                   orderCommissionRateSnapshot,
 
+                riderPayoutRateSnapshot:
+                  pricingConfig.riderPayoutRatePercent,
+
                 customerNote:
                   dto.note,
 
@@ -724,55 +727,6 @@ const orderCommissionRateSnapshot =
                 customerId,
             },
           });
-
-          if (promotion) {
-            const updated =
-              await tx.promotion.updateMany(
-                {
-                  where: {
-                    id: promotion.id,
-                    isActive: true,
-                    OR: [
-                      {
-                        usageLimit: null,
-                      },
-                      {
-                        usageCount: {
-                          lt:
-                            (
-                              await tx.promotion.findUnique(
-                                {
-                                  where: {
-                                    id: promotion.id,
-                                  },
-                                  select: {
-                                    usageLimit:
-                                      true,
-                                  },
-                                },
-                              )
-                            )
-                              ?.usageLimit ??
-                            2147483647,
-                        },
-                      },
-                    ],
-                  },
-
-                  data: {
-                    usageCount: {
-                      increment: 1,
-                    },
-                  },
-                },
-              );
-
-            if (updated.count !== 1) {
-              throw new BadRequestException(
-                'Promotion usage limit reached.',
-              );
-            }
-          }
 
           await tx.cartItem.deleteMany({
             where: {
