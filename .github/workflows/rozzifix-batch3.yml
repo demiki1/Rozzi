@@ -1,5 +1,5 @@
-# Batch 3 refund ledger hardening.
-name: ROZZI batch 3 hardening
+# Batch 4 promotion checkout hardening.
+name: ROZZI batch 4 hardening
 
 on:
   push:
@@ -35,26 +35,8 @@ jobs:
           node-version: 20
           cache: npm
           cache-dependency-path: backend/package-lock.json
-      - name: Apply refund hardening
-        shell: bash
-        run: |
-          python3 <<'PY'
-          from pathlib import Path
-          def read(p): return Path(p).read_text(encoding='utf-8-sig')
-          def write(p,s): Path(p).write_text(s,encoding='utf-8')
-          p='backend/src/modules/finance/ledger.service.ts'; s=read(p)
-          if 'refund:${payload.refundId}:promotion' not in s:
-              anchor='''    if (commissionReversal > 0) await this.record({ type: LedgerEntryType.PLATFORM_COMMISSION, accountType: LedgerAccountType.PLATFORM, orderId: order.id, amount: -commissionReversal, description: `Platform revenue reversal for refund ${payload.refundId}`, idempotencyKey: `refund:${payload.refundId}:platform-revenue` });'''
-              addition=anchor+'''\n    if (promotionDiscount > 0 && !vendorFundedPromotion) {\n      const promotionReversal = Math.min(promotionDiscount, Math.max(0, Math.round(refundAmount * promotionDiscount / Math.max(1, order.totalAmount))));\n      if (promotionReversal > 0) await this.record({ type: LedgerEntryType.PROMOTION, accountType: LedgerAccountType.PLATFORM, orderId: order.id, amount: promotionReversal, description: `ROZZI promotion expense reversal for refund ${payload.refundId}`, idempotencyKey: `refund:${payload.refundId}:promotion` });\n    }'''
-              if anchor not in s: raise SystemExit('refund reversal anchor not found')
-              s=s.replace(anchor,addition,1)
-          write(p,s)
-          p='backend/test/unit/ledger-commission.spec.ts'; s=read(p)
-          if 'reverses ROZZI-funded promotion expense on refund' not in s:
-              test='''\n  it('reverses ROZZI-funded promotion expense on refund', async () => {\n    const order = { id:'order-refund-promo', orderNumber:'RZW-REFUND-PROMO', vendorId:'vendor-1', subtotalAmount:900000, discountAmount:100000, totalAmount:915000, deliveryFeeAmount:0, serviceFeeAmount:15000, riderPayoutRateSnapshot:92, promotionId:'promo-3', promotion:{vendorId:null}, items:[{subtotalAmount:1000000,commissionRateSnapshot:10,commissionAmountSnapshot:100000}], delivery:null };\n    const { prisma, created }=buildPrismaMock(order); const service=new LedgerService(prisma as any,auditLogMock);\n    await service.onRefundProcessed({ orderId: order.id, amountKobo: 915000, refundId: 'refund-promo-1', paymentId: 'payment-promo-1' });\n    expect(created.find(e=>e.type===LedgerEntryType.PROMOTION && e.amount > 0).amount).toBe(100000);\n  });\n'''
-              s=s.replace('\n});\n',test+'\n});\n',1)
-          write(p,s)
-          PY
+      - name: Apply promotion checkout hardening
+        run: python3 .github/patches/batch4.py
       - name: Validate full repository
         run: |
           cd backend
@@ -68,10 +50,10 @@ jobs:
           cd ../customer && npm ci --no-audit --no-fund && npm run build
           cd ../vendor && npm ci --no-audit --no-fund && npm run build
           cd ../rider && npm ci --no-audit --no-fund && npm run build
-      - name: Commit validated batch 3
+      - name: Commit validated batch 4
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git diff --check
-          git add backend/src/modules/finance/ledger.service.ts backend/test/unit/ledger-commission.spec.ts .github/workflows/rozzifix-batch3.yml
-          if git diff --cached --quiet; then echo 'No batch 3 changes.'; else git commit -m 'fix: reverse platform promotion expense on refunds' && git pull --rebase origin codex/rozzifix-batch1 && git push; fi
+          git add backend/src/modules/orders/orders.service.ts .github/patches/batch4.py .github/workflows/rozzifix-batch3.yml
+          if git diff --cached --quiet; then echo 'No batch 4 changes.'; else git commit -m 'fix: harden promotion checkout concurrency' && git pull --rebase origin codex/rozzifix-batch1 && git push; fi
