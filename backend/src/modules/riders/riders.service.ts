@@ -28,8 +28,6 @@ export class RidersService {
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
-  // §11/§27: registering never makes a rider eligible to work. Always
-  // starts PENDING and must go through admin review.
   async register(ownerUserId: string, dto: RegisterRiderDto) {
     const existing = await this.prisma.rider.findUnique({
       where: { ownerUserId },
@@ -42,12 +40,15 @@ export class RidersService {
     }
 
     const areas = await this.prisma.serviceArea.findMany({
-      where: { id: { in: dto.serviceAreaIds } },
+      where: {
+        id: { in: dto.serviceAreaIds },
+        status: 'ACTIVE',
+      },
     });
 
     if (areas.length !== dto.serviceAreaIds.length) {
       throw new NotFoundException(
-        'One or more service areas were not found.',
+        'One or more service areas were not found or are inactive.',
       );
     }
 
@@ -129,6 +130,10 @@ export class RidersService {
       throw new NotFoundException('Service area not found.');
     }
 
+    if (area.status !== 'ACTIVE') {
+      throw new BadRequestException('Only active service areas can be added.');
+    }
+
     return this.prisma.riderZone.upsert({
       where: {
         riderId_serviceAreaId: {
@@ -164,8 +169,6 @@ export class RidersService {
     });
   }
 
-  // ---- Go online / offline (§12) ----
-
   async goOnline(ownerUserId: string) {
     const rider = await this.getByOwner(ownerUserId);
 
@@ -185,8 +188,6 @@ export class RidersService {
       where: { id: rider.id },
       data: {
         isOnline: true,
-        // First time going online promotes APPROVED -> ACTIVE.
-        // See the design note on RiderStatus in schema.prisma.
         status:
           rider.status === RiderStatus.APPROVED
             ? RiderStatus.ACTIVE
@@ -198,8 +199,6 @@ export class RidersService {
   async goOffline(ownerUserId: string) {
     const rider = await this.getByOwner(ownerUserId);
 
-    // Riders with an in-progress delivery must remain available
-    // until the delivery is terminal.
     const active = await this.prisma.delivery.findFirst({
       where: {
         riderId: rider.id,
@@ -259,8 +258,6 @@ export class RidersService {
     return location;
   }
 
-  // ---- Rider Issues / Delivery Reassignment ----
-
   async createIssue(
     ownerUserId: string,
     dto: {
@@ -273,21 +270,13 @@ export class RidersService {
     const rider = await this.getByOwner(ownerUserId);
 
     if (!dto.category?.trim()) {
-      throw new BadRequestException(
-        'Issue category is required.',
-      );
+      throw new BadRequestException('Issue category is required.');
     }
-
     if (!dto.subject?.trim()) {
-      throw new BadRequestException(
-        'Issue subject is required.',
-      );
+      throw new BadRequestException('Issue subject is required.');
     }
-
     if (!dto.description?.trim()) {
-      throw new BadRequestException(
-        'Issue description is required.',
-      );
+      throw new BadRequestException('Issue description is required.');
     }
 
     if (dto.deliveryId) {
@@ -296,9 +285,7 @@ export class RidersService {
           id: dto.deliveryId,
           riderId: rider.id,
         },
-        select: {
-          id: true,
-        },
+        select: { id: true },
       });
 
       if (!delivery) {
@@ -336,29 +323,21 @@ export class RidersService {
     return issue;
   }
 
-   async listIssues(ownerUserId: string) {
+  async listIssues(ownerUserId: string) {
     const rider = await this.getByOwner(ownerUserId);
 
     return this.prisma.riderIssue.findMany({
-      where: {
-        riderId: rider.id,
-      },
+      where: { riderId: rider.id },
       include: {
         delivery: {
           select: {
             id: true,
             orderId: true,
-            order: {
-              select: {
-                status: true,
-              },
-            },
+            order: { select: { status: true } },
           },
         },
       },
-      orderBy: {
-        createdAt: 'desc',
-      },
+      orderBy: { createdAt: 'desc' },
     });
   }
 
@@ -370,18 +349,11 @@ export class RidersService {
     const rider = await this.getByOwner(ownerUserId);
 
     const delivery = await this.prisma.delivery.findFirst({
-      where: {
-        id: deliveryId,
-        riderId: rider.id,
-      },
+      where: { id: deliveryId, riderId: rider.id },
       select: {
         id: true,
         orderId: true,
-        order: {
-          select: {
-            status: true,
-          },
-        },
+        order: { select: { status: true } },
       },
     });
 
@@ -436,7 +408,6 @@ export class RidersService {
 
     return issue;
   }
-  // ---- Admin: verification workflow (§11, §27) ----
 
   async listAdmin(status?: RiderStatus) {
     return this.prisma.rider.findMany({
@@ -486,9 +457,7 @@ export class RidersService {
           },
         },
       },
-      orderBy: {
-        createdAt: 'desc',
-      },
+      orderBy: { createdAt: 'desc' },
     });
   }
 
@@ -496,22 +465,12 @@ export class RidersService {
     return this.prisma.rider.findMany({
       where: {
         status: {
-          in: [
-            RiderStatus.PENDING,
-            RiderStatus.UNDER_REVIEW,
-          ],
+          in: [RiderStatus.PENDING, RiderStatus.UNDER_REVIEW],
         },
       },
       include: {
         documents: true,
-        zones: {
-          include: {
-            serviceArea: true,
-          },
-        },
-        // SECURITY: select only what the admin UI needs.
-        // Never return the full User row because it includes
-        // sensitive fields such as passwordHash.
+        zones: { include: { serviceArea: true } },
         owner: {
           select: {
             id: true,
@@ -521,16 +480,11 @@ export class RidersService {
           },
         },
       },
-      orderBy: {
-        createdAt: 'asc',
-      },
+      orderBy: { createdAt: 'asc' },
     });
   }
 
-  async startReview(
-    riderId: string,
-    actorId: string,
-  ) {
+  async startReview(riderId: string, actorId: string) {
     const rider = await this.getRiderOrThrow(riderId);
 
     if (rider.status !== RiderStatus.PENDING) {
@@ -541,9 +495,7 @@ export class RidersService {
 
     const updated = await this.prisma.rider.update({
       where: { id: riderId },
-      data: {
-        status: RiderStatus.UNDER_REVIEW,
-      },
+      data: { status: RiderStatus.UNDER_REVIEW },
     });
 
     await this.auditLog.record({
@@ -551,21 +503,14 @@ export class RidersService {
       action: 'rider.start_review',
       entityType: 'Rider',
       entityId: riderId,
-      before: {
-        status: rider.status,
-      },
-      after: {
-        status: updated.status,
-      },
+      before: { status: rider.status },
+      after: { status: updated.status },
     });
 
     return updated;
   }
 
-  async approve(
-    riderId: string,
-    actorId: string,
-  ) {
+  async approve(riderId: string, actorId: string) {
     const before = await this.getRiderOrThrow(riderId);
 
     const updated = await this.prisma.rider.update({
@@ -581,22 +526,14 @@ export class RidersService {
       action: 'rider.approve',
       entityType: 'Rider',
       entityId: riderId,
-      before: {
-        status: before.status,
-      },
-      after: {
-        status: updated.status,
-      },
+      before: { status: before.status },
+      after: { status: updated.status },
     });
 
     return updated;
   }
 
-  async reject(
-    riderId: string,
-    actorId: string,
-    reason?: string,
-  ) {
+  async reject(riderId: string, actorId: string, reason?: string) {
     const before = await this.getRiderOrThrow(riderId);
 
     const updated = await this.prisma.rider.update({
@@ -612,22 +549,14 @@ export class RidersService {
       action: 'rider.reject',
       entityType: 'Rider',
       entityId: riderId,
-      before: {
-        status: before.status,
-      },
-      after: {
-        status: updated.status,
-        reason,
-      },
+      before: { status: before.status },
+      after: { status: updated.status, reason },
     });
 
     return updated;
   }
 
-  async suspend(
-    riderId: string,
-    actorId: string,
-  ) {
+  async suspend(riderId: string, actorId: string) {
     const before = await this.getRiderOrThrow(riderId);
 
     const updated = await this.prisma.rider.update({
@@ -643,12 +572,8 @@ export class RidersService {
       action: 'rider.suspend',
       entityType: 'Rider',
       entityId: riderId,
-      before: {
-        status: before.status,
-      },
-      after: {
-        status: updated.status,
-      },
+      before: { status: before.status },
+      after: { status: updated.status },
     });
 
     return updated;
@@ -657,15 +582,9 @@ export class RidersService {
   async listByZone(serviceAreaId: string) {
     return this.prisma.rider.findMany({
       where: {
-        zones: {
-          some: {
-            serviceAreaId,
-          },
-        },
+        zones: { some: { serviceAreaId } },
       },
-      include: {
-        location: true,
-      },
+      include: { location: true },
     });
   }
 
