@@ -33,13 +33,13 @@ describe('Admin settings propagation e2e', () => {
 
   afterAll(async () => { await app.close(); });
 
-  it('persists an admin operational setting', async () => {
-    const before = await prisma.setting.findUnique({ where: { key: 'ordersEnabled' } });
-    await settings.updateMany({ ordersEnabled: false } as any, adminActorId);
+  it('persists an admin operational setting and propagates the commission setting', async () => {
+    await settings.updateMany({ ordersEnabled: false, defaultCommissionRate: 17 } as any, adminActorId);
     const stored = await prisma.setting.findUnique({ where: { key: 'ordersEnabled' } });
     expect(stored?.value).toBe(false);
-    expect(before?.value).not.toBe(stored?.value);
-    await settings.updateMany({ ordersEnabled: true } as any, adminActorId);
+    const activeCommission = await prisma.commissionConfig.findFirst({ where: { isActive: true }, orderBy: { createdAt: 'desc' } });
+    expect(Number(activeCommission?.defaultRatePercent)).toBe(17);
+    await settings.updateMany({ ordersEnabled: true, defaultCommissionRate: 10 } as any, adminActorId);
   });
 
   it('propagates pricing configuration into a new order and then into the ledger payout', async () => {
@@ -62,22 +62,10 @@ describe('Admin settings propagation e2e', () => {
 
     await prisma.cart.create({ data: { customerId: customer.id, vendorId: vendor.id, items: { create: { productId: product.id, quantity: 1 } } } });
     const address = await prisma.address.create({ data: { customerId: customer.id, label: 'Home', addressText: 'Admin Flow Street', latitude: 6.5000000, longitude: 7.5000000 } });
+    await prisma.commissionConfig.deleteMany({});
     await prisma.commissionConfig.create({ data: { defaultRatePercent: 10, isActive: true } });
 
-    const updated = await pricing.updateConfig(area.id, {
-      serviceFeeRatePercent: 0,
-      serviceFeeCapAmount: 100_000,
-      baseDeliveryFee: 10_000,
-      perKmDeliveryFee: 0,
-      deliveryRadiusKm: 8,
-      riderPayoutRatePercent: 90,
-      surgeEnabled: false,
-      surgeLevel: 'NORMAL',
-      surgeSlightlyHighAmount: 0,
-      surgeHighAmount: 0,
-      surgeVeryHighAmount: 0,
-    }, admin.id);
-
+    const updated = await pricing.updateConfig(area.id, { serviceFeeRatePercent: 0, serviceFeeCapAmount: 100_000, baseDeliveryFee: 10_000, perKmDeliveryFee: 0, deliveryRadiusKm: 8, riderPayoutRatePercent: 90, surgeEnabled: false, surgeLevel: 'NORMAL', surgeSlightlyHighAmount: 0, surgeHighAmount: 0, surgeVeryHighAmount: 0 }, admin.id);
     const dbConfig = await prisma.pricingConfig.findUnique({ where: { id: updated.id } });
     expect(dbConfig?.isActive).toBe(true);
     expect(Number(dbConfig?.riderPayoutRatePercent)).toBe(90);
@@ -90,7 +78,6 @@ describe('Admin settings propagation e2e', () => {
     const rider = await prisma.rider.create({ data: { ownerUserId: riderOwner.id, vehicleType: 'MOTORCYCLE', status: 'APPROVED', isOnline: true } });
     await prisma.delivery.create({ data: { orderId: order.id, riderId: rider.id, assignedAt: new Date(), deliveredAt: new Date() } });
     await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.DELIVERED } });
-
     await ledger.onOrderTransitioned({ orderId: order.id, orderNumber: order.orderNumber, customerId: customer.id, vendorId: vendor.id, fromStatus: OrderStatus.IN_TRANSIT, toStatus: OrderStatus.DELIVERED, deliveryType: 'DELIVERY' });
 
     const riderEntry = await prisma.ledgerEntry.findFirst({ where: { accountType: 'RIDER', accountId: rider.id, orderId: order.id, type: 'RIDER_EARNING' } });
