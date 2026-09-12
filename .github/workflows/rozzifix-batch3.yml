@@ -1,5 +1,5 @@
-# Batch 12 promotion scope hardening. Full validation is mandatory.
-name: ROZZI batch 12 hardening
+# Batch 13 refund idempotency hardening. Full validation is mandatory.
+name: ROZZI batch 13 hardening
 
 on:
   push:
@@ -35,18 +35,8 @@ jobs:
           node-version: 20
           cache: npm
           cache-dependency-path: backend/package-lock.json
-      - name: Apply promotion scope hardening
-        run: |
-          python3 -c "from pathlib import Path; p=Path('backend/src/modules/wallet/wallet.service.ts'); s=p.read_text(encoding='utf-8-sig'); old='''        OR: [\n          { vendorId: null },\n          { vendorId: dto.vendorId || undefined },\n        ],'''; new='''        ...(dto.vendorId\n          ? { OR: [{ vendorId: null }, { vendorId: dto.vendorId }] }\n          : { vendorId: null }),'''; assert old in s; p.write_text(s.replace(old,new,1),encoding='utf-8')
-          cat > backend/test/unit/wallet-promotion-scope.spec.ts <<'EOF'
-          import { WalletService } from '../../src/modules/wallet/wallet.service';
-          describe('WalletService promotion scope', () => {
-            const promotion = { id:'p1', code:'SAVE10', name:'Save 10', type:'PERCENTAGE', value:10, maxDiscount:null, minOrderAmount:0, usageLimit:null, usageCount:0, perCustomerLimit:null, vendorId:'v1', isActive:true, startsAt:new Date(Date.now()-1000), endsAt:new Date(Date.now()+100000) };
-            const make = () => { const prisma:any={promotion:{findFirst:jest.fn().mockResolvedValue(promotion)},promotionRedemption:{count:jest.fn().mockResolvedValue(0)}}; return {service:new WalletService(prisma),prisma}; };
-            it('uses only global scope when vendorId is omitted', async () => { const {service,prisma}=make(); await service.applyPromotion('c1',{code:'SAVE10',subtotalAmount:10000}); expect(prisma.promotion.findFirst).toHaveBeenCalledWith(expect.objectContaining({where:expect.objectContaining({vendorId:null})})); });
-            it('limits vendor scope to the requested vendor plus global fallback', async () => { const {service,prisma}=make(); await service.applyPromotion('c1',{code:'SAVE10',subtotalAmount:10000,vendorId:'v1'}); expect(prisma.promotion.findFirst).toHaveBeenCalledWith(expect.objectContaining({where:expect.objectContaining({OR:[{vendorId:null},{vendorId:'v1'}]})})); });
-          });
-          EOF
+      - name: Apply refund idempotency hardening
+        run: python3 .github/patches/batch13.py
       - name: Validate full repository
         run: |
           cd backend
@@ -60,10 +50,11 @@ jobs:
           cd ../customer && npm ci --no-audit --no-fund && npm run build
           cd ../vendor && npm ci --no-audit --no-fund && npm run build
           cd ../rider && npm ci --no-audit --no-fund && npm run build
-      - name: Commit validated batch 12
+      - name: Commit validated batch 13
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git diff --check
-          git add backend/src/modules/wallet/wallet.service.ts backend/test/unit/wallet-promotion-scope.spec.ts .github/workflows/rozzifix-batch3.yml
-          if git diff --cached --quiet; then echo 'No batch 12 changes.'; else git commit -m 'fix: harden promotion vendor scope [skip ci]' && git push; fi
+          rm -f .github/patches/batch13.py
+          git add backend/src/modules/payments/payments.service.ts backend/test/unit/refund-concurrency.spec.ts .github/workflows/rozzifix-batch3.yml .github/patches/batch13.py
+          if git diff --cached --quiet; then echo 'No batch 13 changes.'; else git commit -m 'fix: harden refund idempotency [skip ci]' && git push; fi
