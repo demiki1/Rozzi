@@ -12,6 +12,16 @@ def replace(path, old, new):
 # vendor logos/covers and the legacy vendor document endpoint.
 replace(
     'backend/src/modules/vendors/vendor-onboarding.service.ts',
+    "import { NotificationsService } from '../notifications/notifications.service';",
+    "import { NotificationsService } from '../notifications/notifications.service';\nimport { StorageService } from '../storage/storage.service';",
+)
+replace(
+    'backend/src/modules/vendors/vendor-onboarding.service.ts',
+    "  constructor(\n    private prisma: PrismaService,\n    private audit: AuditLogService,\n    private notifications: NotificationsService,\n  ) {}",
+    "  constructor(\n    private prisma: PrismaService,\n    private audit: AuditLogService,\n    private notifications: NotificationsService,\n    private storage: StorageService,\n  ) {}",
+)
+replace(
+    'backend/src/modules/vendors/vendor-onboarding.service.ts',
     "    const row = await this.prisma.vendorDocument.create({\n      data: {\n        vendorId: v.id,\n        docType: docType.trim(),\n        fileUrl: fileUrl.trim(),\n      },\n    });",
     "    const ownedFileUrl = await this.storage.getOwnedPublicImageUrl(userId, fileUrl.trim());\n    const row = await this.prisma.vendorDocument.create({\n      data: {\n        vendorId: v.id,\n        docType: docType.trim(),\n        fileUrl: ownedFileUrl,\n      },\n    });",
 )
