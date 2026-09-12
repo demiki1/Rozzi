@@ -57,4 +57,4 @@ jobs:
           git diff --check
           rm -f .github/patches/batch13.py .github/patches/batch14-branch.py
           git add backend/src/modules/payments/payments.service.ts backend/test/unit/refund-concurrency.spec.ts .github/workflows/rozzifix-batch3.yml .github/patches/batch13.py .github/patches/batch14-branch.py
-          if git diff --cached --quiet; then echo 'No batch 14 changes.'; else git commit -m 'fix: harden payment concurrency [skip ci]' && git push; fi
+          if git diff --cached --quiet; then echo 'No batch 14 changes.'; else git commit -m 'fix: harden payment concurrency [skip ci]' && git pull --rebase origin codex/rozzifix-batch1 && git push; fi
