@@ -1,5 +1,6 @@
 # Batch 13 refund idempotency hardening. Full validation is mandatory.
 # Retry after fixing the regression-test TypeScript inference.
+# Re-run validation on the latest branch state.
 name: ROZZI batch 13 hardening
 
 on:
