@@ -1,7 +1,5 @@
-# Batch 13 refund idempotency hardening. Full validation is mandatory.
-# Retry after fixing the regression-test TypeScript inference.
-# Re-run validation on the latest branch state.
-name: ROZZI batch 13 hardening
+# Batch 14 payment concurrency hardening. Full validation is mandatory.
+name: ROZZI batch 14 hardening
 
 on:
   push:
@@ -37,8 +35,8 @@ jobs:
           node-version: 20
           cache: npm
           cache-dependency-path: backend/package-lock.json
-      - name: Apply refund idempotency hardening
-        run: python3 .github/patches/batch13.py
+      - name: Apply payment hardening
+        run: python3 .github/patches/batch14.py
       - name: Validate full repository
         run: |
           cd backend
@@ -52,11 +50,11 @@ jobs:
           cd ../customer && npm ci --no-audit --no-fund && npm run build
           cd ../vendor && npm ci --no-audit --no-fund && npm run build
           cd ../rider && npm ci --no-audit --no-fund && npm run build
-      - name: Commit validated batch 13
+      - name: Commit validated batch 14
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git diff --check
-          rm -f .github/patches/batch13.py
-          git add backend/src/modules/payments/payments.service.ts backend/test/unit/refund-concurrency.spec.ts .github/workflows/rozzifix-batch3.yml .github/patches/batch13.py
-          if git diff --cached --quiet; then echo 'No batch 13 changes.'; else git commit -m 'fix: harden refund idempotency [skip ci]' && git push; fi
+          rm -f .github/patches/batch13.py .github/patches/batch14.py
+          git add backend/src/modules/payments/payments.service.ts backend/test/unit/refund-concurrency.spec.ts .github/workflows/rozzifix-batch3.yml .github/patches/batch13.py .github/patches/batch14.py
+          if git diff --cached --quiet; then echo 'No batch 14 changes.'; else git commit -m 'fix: harden payment concurrency [skip ci]' && git push; fi
