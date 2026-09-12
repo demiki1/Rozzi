@@ -1,4 +1,4 @@
-# Batch 11 wallet refund concurrency hardening. Full validation is mandatory; retry fixture corrected.
+# Batch 11 wallet refund concurrency hardening. Full validation is mandatory; final fixture correction.
 name: ROZZI batch 11 hardening
 
 on:
