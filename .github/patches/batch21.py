@@ -28,3 +28,27 @@ if old not in s:
     raise SystemExit('adjustStock inventory block not found')
 s = s.replace(old, new, 1)
 p.write_text(s, encoding='utf-8')
+
+p = Path('backend/src/modules/orders/orders.service.ts')
+s = p.read_text(encoding='utf-8-sig')
+old = '''    if (
+      process.env.NODE_ENV === 'production'
+    ) {
+      throw new ForbiddenException(
+        'This endpoint is disabled outside development.',
+      );
+    }
+'''
+new = '''    if (
+      process.env.NODE_ENV !== 'development' &&
+      process.env.NODE_ENV !== 'test'
+    ) {
+      throw new ForbiddenException(
+        'This endpoint is disabled outside development and test environments.',
+      );
+    }
+'''
+if old not in s:
+    raise SystemExit('dev payment environment guard not found')
+s = s.replace(old, new, 1)
+p.write_text(s, encoding='utf-8')
