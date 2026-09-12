@@ -1,4 +1,4 @@
-﻿import {
+import {
   BadRequestException,
   ForbiddenException,
   Injectable,
@@ -363,6 +363,7 @@ const orderCommissionRateSnapshot =
           dto.promotionCode,
           customerId,
           discountedMerchandiseSubtotal,
+          cart.vendorId!,
         )
       : null;
 
@@ -569,6 +570,16 @@ const orderCommissionRateSnapshot =
     const order =
       await this.prisma.$transaction(
         async (tx) => {
+          if (promotion) {
+            await this.promotionsService.consumePromotion(
+              tx,
+              promotion.id,
+              customerId,
+              discountedMerchandiseSubtotal,
+              promotion.discount,
+            );
+          }
+
           if (
             vendor.maxOrdersPerHour !=
             null
