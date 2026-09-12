@@ -1,5 +1,5 @@
-# Batch 4 promotion checkout hardening.
-name: ROZZI batch 4 hardening
+# Batch 5 rider payout configuration hardening.
+name: ROZZI batch 5 hardening
 
 on:
   push:
@@ -35,8 +35,8 @@ jobs:
           node-version: 20
           cache: npm
           cache-dependency-path: backend/package-lock.json
-      - name: Apply promotion checkout hardening
-        run: python3 .github/patches/batch4.py
+      - name: Apply rider payout hardening
+        run: python3 .github/patches/batch5.py
       - name: Validate full repository
         run: |
           cd backend
@@ -50,10 +50,11 @@ jobs:
           cd ../customer && npm ci --no-audit --no-fund && npm run build
           cd ../vendor && npm ci --no-audit --no-fund && npm run build
           cd ../rider && npm ci --no-audit --no-fund && npm run build
-      - name: Commit validated batch 4
+      - name: Commit validated batch 5
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git diff --check
-          git add backend/src/modules/orders/orders.service.ts .github/patches/batch4.py .github/workflows/rozzifix-batch3.yml
-          if git diff --cached --quiet; then echo 'No batch 4 changes.'; else git commit -m 'fix: harden promotion checkout concurrency' && git pull --rebase origin codex/rozzifix-batch1 && git push; fi
+          rm -f .github/patches/batch4.py .github/patches/batch5.py
+          git add backend/src/modules/pricing/pricing.service.ts apps/admin/src/app/settings/pricing/page.tsx .github/workflows/rozzifix-batch3.yml .github/patches/batch4.py .github/patches/batch5.py
+          if git diff --cached --quiet; then echo 'No batch 5 changes.'; else git commit -m 'fix: make rider payout rate configurable' && git pull --rebase origin codex/rozzifix-batch1 && git push; fi
