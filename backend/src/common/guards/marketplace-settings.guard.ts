@@ -41,7 +41,7 @@ export class MarketplaceSettingsGuard implements CanActivate {
         [UserRole.RIDER]: 'riderRegistrationEnabled',
       };
       const key = role ? keyByRole[role] : undefined;
-      if (key) {
+      if (key && role) {
         const enabled = Boolean((await this.settings.get(key)).value);
         if (!enabled) {
           throw new BadRequestException(`${role.toLowerCase()} registration is currently disabled.`);
