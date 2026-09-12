@@ -53,3 +53,4 @@ jobs:
           cd ../customer && npm ci --no-audit --no-fund && npm run build
           cd ../vendor && npm ci --no-audit --no-fund && npm run build
           cd ../rider && npm ci --no-audit --no-fund && npm run build
+      # Rider audit rerun: validate the current patch against the full stack.
