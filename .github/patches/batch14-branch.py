@@ -25,3 +25,8 @@ w=wp.read_text(encoding='utf-8-sig')
 w=w.replace("payment: { findUnique: jest.fn().mockResolvedValue(payment), update: jest.fn().mockResolvedValue({ ...payment, status: 'SUCCESS' }) },", "payment: { findUnique: jest.fn().mockResolvedValue(payment), update: jest.fn().mockResolvedValue({ ...payment, status: 'SUCCESS' }), updateMany: jest.fn().mockResolvedValue({ count: 1 }) },")
 w=w.replace("expect(prisma.payment.update).toHaveBeenCalledTimes(1);", "expect(prisma.payment.updateMany).toHaveBeenCalledTimes(1);")
 wp.write_text(w,encoding='utf-8')
+
+flow=Path('.github/workflows/rozzifix-batch3.yml')
+f=flow.read_text(encoding='utf-8-sig')
+f=f.replace("git commit -m 'fix: harden refund and settlement concurrency [skip ci]' && git pull --rebase origin codex/rozzifix-batch1 && git push", "git commit -m 'fix: harden refund and settlement concurrency [skip ci]' && git push origin HEAD:codex/rozzifix-batch1")
+flow.write_text(f,encoding='utf-8')
