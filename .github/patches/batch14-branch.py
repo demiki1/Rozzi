@@ -1,4 +1,5 @@
 from pathlib import Path
+import subprocess
 p=Path('backend/src/modules/payments/payments.service.ts')
 s=p.read_text(encoding='utf-8-sig')
 old='''      const updated = await this.prisma.$transaction(async (tx) => {\n        const current = await tx.refund.findUnique({\n          where: { id: refund.id },\n        });\n'''
@@ -31,3 +32,6 @@ f=flow.read_text(encoding='utf-8-sig')
 f=f.replace("git commit -m 'fix: harden refund and settlement concurrency [skip ci]' && git pull --rebase origin codex/rozzifix-batch1 && git push", "git commit -m 'fix: harden refund and settlement concurrency [skip ci]' && git push origin HEAD:codex/rozzifix-batch1")
 f=f.replace("backend/test/unit/refund-concurrency.spec.ts backend/src/modules/finance/ledger.service.ts", "backend/test/unit/refund-concurrency.spec.ts backend/test/unit/webhook-payload.spec.ts backend/src/modules/finance/ledger.service.ts")
 flow.write_text(f,encoding='utf-8')
+
+# Stage the regression here because the workflow commit step has a fixed staging list.
+subprocess.run(['git','add','backend/test/unit/webhook-payload.spec.ts'], check=True)
