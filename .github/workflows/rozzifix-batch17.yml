@@ -1,12 +1,10 @@
 name: ROZZI rider audit validation v17
 
 on:
+  pull_request:
+    branches: [main]
   push:
     branches: [codex/rozzifix-batch1]
-
-concurrency:
-  group: rozzifix-rider-audit-v17
-  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -38,10 +36,8 @@ jobs:
           node-version: 20
           cache: npm
           cache-dependency-path: backend/package-lock.json
-
       - name: Apply rider audit patch
         run: python3 .github/patches/batch31.py
-
       - name: Validate backend
         run: |
           cd backend
@@ -51,7 +47,6 @@ jobs:
           npm run build
           npm test -- --runInBand
           npm run test:e2e -- --runInBand
-
       - name: Validate frontends
         run: |
           cd apps/admin && npm ci --no-audit --no-fund && npm run build
