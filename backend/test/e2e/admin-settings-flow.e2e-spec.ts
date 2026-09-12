@@ -15,6 +15,7 @@ describe('Admin settings propagation e2e', () => {
   let pricing: PricingService;
   let orders: OrdersService;
   let ledger: LedgerService;
+  let adminActorId: string;
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   beforeAll(async () => {
@@ -26,27 +27,27 @@ describe('Admin settings propagation e2e', () => {
     pricing = app.get(PricingService);
     orders = app.get(OrdersService);
     ledger = app.get(LedgerService);
+    const actor = await prisma.user.create({ data: { fullName: 'Admin Flow Actor', email: `actor-${unique}@example.com`, passwordHash: 'test-only', role: UserRole.ADMIN, adminRole: AdminRole.SUPER_ADMIN } });
+    adminActorId = actor.id;
   });
 
   afterAll(async () => { await app.close(); });
 
   it('persists an admin operational setting', async () => {
     const before = await prisma.setting.findUnique({ where: { key: 'ordersEnabled' } });
-    await settings.updateMany({ ordersEnabled: false } as any, 'admin-test-actor');
+    await settings.updateMany({ ordersEnabled: false } as any, adminActorId);
     const stored = await prisma.setting.findUnique({ where: { key: 'ordersEnabled' } });
     expect(stored?.value).toBe(false);
     expect(before?.value).not.toBe(stored?.value);
-    await settings.updateMany({ ordersEnabled: true } as any, 'admin-test-actor');
+    await settings.updateMany({ ordersEnabled: true } as any, adminActorId);
   });
 
   it('propagates pricing configuration into a new order and then into the ledger payout', async () => {
     const country = await prisma.location.create({ data: { type: 'COUNTRY', name: `AdminFlowCountry-${unique}` } });
     const state = await prisma.location.create({ data: { type: 'STATE', name: `AdminFlowState-${unique}`, parentId: country.id } });
-    const area = await prisma.serviceArea.create({
-      data: { locationId: state.id, name: `AdminFlowArea-${unique}`, status: 'ACTIVE', minimumOrderAmount: 0, baseDeliveryFee: 10_000, serviceFeeAmount: 0 },
-    });
+    const area = await prisma.serviceArea.create({ data: { locationId: state.id, name: `AdminFlowArea-${unique}`, status: 'ACTIVE', minimumOrderAmount: 0, baseDeliveryFee: 10_000, serviceFeeAmount: 0 } });
 
-    const admin = await prisma.user.create({ data: { fullName: 'Admin Flow', email: `admin-${unique}@example.com`, passwordHash: 'test-only', role: UserRole.ADMIN, adminRole: AdminRole.SUPER_ADMIN } });
+    const admin = await prisma.user.findUniqueOrThrow({ where: { id: adminActorId } });
     const customer = await prisma.user.create({ data: { fullName: 'Admin Flow Customer', email: `customer-${unique}@example.com`, passwordHash: 'test-only', role: UserRole.CUSTOMER } });
     const vendorOwner = await prisma.user.create({ data: { fullName: 'Admin Flow Vendor', email: `vendor-${unique}@example.com`, passwordHash: 'test-only', role: UserRole.VENDOR } });
     const riderOwner = await prisma.user.create({ data: { fullName: 'Admin Flow Rider', email: `rider-${unique}@example.com`, passwordHash: 'test-only', role: UserRole.RIDER } });
@@ -90,15 +91,7 @@ describe('Admin settings propagation e2e', () => {
     await prisma.delivery.create({ data: { orderId: order.id, riderId: rider.id, assignedAt: new Date(), deliveredAt: new Date() } });
     await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.DELIVERED } });
 
-    await ledger.onOrderTransitioned({
-      orderId: order.id,
-      orderNumber: order.orderNumber,
-      customerId: customer.id,
-      vendorId: vendor.id,
-      fromStatus: OrderStatus.IN_TRANSIT,
-      toStatus: OrderStatus.DELIVERED,
-      deliveryType: 'DELIVERY',
-    });
+    await ledger.onOrderTransitioned({ orderId: order.id, orderNumber: order.orderNumber, customerId: customer.id, vendorId: vendor.id, fromStatus: OrderStatus.IN_TRANSIT, toStatus: OrderStatus.DELIVERED, deliveryType: 'DELIVERY' });
 
     const riderEntry = await prisma.ledgerEntry.findFirst({ where: { accountType: 'RIDER', accountId: rider.id, orderId: order.id, type: 'RIDER_EARNING' } });
     expect(riderEntry?.amount).toBe(9_000);
