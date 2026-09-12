@@ -1,6 +1,6 @@
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
-import { AdminRole, OrderDeliveryType, OrderStatus, UserRole } from '@prisma/client';
+import { AdminRole, DeliveryModel, OrderDeliveryType, OrderStatus, UserRole } from '@prisma/client';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import request from 'supertest';
@@ -29,15 +29,7 @@ describe('Admin hardening e2e', () => {
   const password = 'AdminHardening!123';
 
   async function createAdmin(adminRole: AdminRole, label: string) {
-    return prisma.user.create({
-      data: {
-        fullName: `Admin ${label}`,
-        email: `${label.toLowerCase()}-${unique}@example.com`,
-        passwordHash: await bcrypt.hash(password, 4),
-        role: UserRole.ADMIN,
-        adminRole,
-      },
-    });
+    return prisma.user.create({ data: { fullName: `Admin ${label}`, email: `${label.toLowerCase()}-${unique}@example.com`, passwordHash: await bcrypt.hash(password, 4), role: UserRole.ADMIN, adminRole } });
   }
 
   function signToken(user: { id: string; role: UserRole }) {
@@ -45,14 +37,7 @@ describe('Admin hardening e2e', () => {
   }
 
   async function createUser(role: UserRole, label: string) {
-    const user = await prisma.user.create({
-      data: {
-        fullName: label,
-        email: `${label.toLowerCase().replace(/\s+/g, '-')}-${unique}@example.com`,
-        passwordHash: await bcrypt.hash(password, 4),
-        role,
-      },
-    });
+    const user = await prisma.user.create({ data: { fullName: label, email: `${label.toLowerCase().replace(/\s+/g, '-')}-${unique}@example.com`, passwordHash: await bcrypt.hash(password, 4), role } });
     return { user, token: signToken(user) };
   }
 
@@ -65,9 +50,7 @@ describe('Admin hardening e2e', () => {
     ledger = app.get(LedgerService);
 
     const superAdmin = await createAdmin(AdminRole.SUPER_ADMIN, 'Super');
-    const login = await request(app.getHttpServer())
-      .post('/api/auth/login')
-      .send({ email: superAdmin.email, password });
+    const login = await request(app.getHttpServer()).post('/api/auth/login').send({ email: superAdmin.email, password });
     expect(login.status).toBe(201);
     superToken = tokenFrom(login);
 
@@ -79,9 +62,7 @@ describe('Admin hardening e2e', () => {
     operationsToken = signToken(await createAdmin(AdminRole.OPERATIONS_ADMIN, 'Operations'));
   });
 
-  afterAll(async () => {
-    await app.close();
-  });
+  afterAll(async () => { await app.close(); });
 
   it('enforces admin sub-role boundaries at the API, not only in the UI', async () => {
     expect((await request(app.getHttpServer()).get('/api/admin/reports/summary').set('Authorization', `Bearer ${financeToken}`)).status).toBe(200);
@@ -95,9 +76,7 @@ describe('Admin hardening e2e', () => {
 
   it('rejects non-admin credentials from an admin endpoint', async () => {
     const { token } = await createUser(UserRole.CUSTOMER, 'Boundary Customer');
-    const response = await request(app.getHttpServer())
-      .get('/api/admin/settings')
-      .set('Authorization', `Bearer ${token}`);
+    const response = await request(app.getHttpServer()).get('/api/admin/settings').set('Authorization', `Bearer ${token}`);
     expect(response.status).toBe(403);
   });
 
@@ -107,10 +86,7 @@ describe('Admin hardening e2e', () => {
     const beforeMinimum = await prisma.setting.findUnique({ where: { key: 'minimumOrderAmount' } });
     const beforeMinimumAmount = typeof beforeMinimum?.value === 'number' ? beforeMinimum.value : Number(beforeMinimum?.value ?? 0);
 
-    const disabled = await request(app.getHttpServer())
-      .patch('/api/admin/settings')
-      .set('Authorization', `Bearer ${superToken}`)
-      .send({ ordersEnabled: false });
+    const disabled = await request(app.getHttpServer()).patch('/api/admin/settings').set('Authorization', `Bearer ${superToken}`).send({ ordersEnabled: false });
     expect(disabled.status).toBe(200);
     expect((await prisma.setting.findUnique({ where: { key: 'ordersEnabled' } }))?.value).toBe(false);
 
@@ -119,7 +95,7 @@ describe('Admin hardening e2e', () => {
     const area = await prisma.serviceArea.create({ data: { locationId: state.id, name: `AdminHardeningArea-${unique}`, status: 'ACTIVE', minimumOrderAmount: 0, baseDeliveryFee: 1000, serviceFeeAmount: 0 } });
     const vendorOwner = await createUser(UserRole.VENDOR, 'Admin Hardening Vendor');
     const vendorType = await prisma.vendorType.create({ data: { name: `AdminHardeningType-${unique}` } });
-    const vendor = await prisma.vendor.create({ data: { ownerUserId: vendorOwner.user.id, vendorTypeId: vendorType.id, storeName: `Admin Hardening Store ${unique}`, status: 'APPROVED', isOpen: true, supportedDeliveryModels: ['PLATFORM_DELIVERY'] } });
+    const vendor = await prisma.vendor.create({ data: { ownerUserId: vendorOwner.user.id, vendorTypeId: vendorType.id, storeName: `Admin Hardening Store ${unique}`, status: 'APPROVED', isOpen: true, supportedDeliveryModels: [DeliveryModel.PLATFORM_DELIVERY, DeliveryModel.CUSTOMER_PICKUP] } });
     await prisma.vendorLocation.create({ data: { vendorId: vendor.id, serviceAreaId: area.id, latitude: 6.5, longitude: 7.5 } });
     const category = await prisma.category.create({ data: { name: `AdminHardeningCategory-${unique}` } });
     const product = await prisma.product.create({ data: { vendorId: vendor.id, categoryId: category.id, name: `AdminHardeningProduct-${unique}`, priceAmount: 10000, isAvailable: true } });
@@ -128,32 +104,20 @@ describe('Admin hardening e2e', () => {
     await prisma.address.create({ data: { customerId: customer.user.id, label: 'Home', addressText: 'Admin Hardening Street', latitude: 6.5, longitude: 7.5 } });
     await prisma.cart.create({ data: { customerId: customer.user.id, vendorId: vendor.id, items: { create: { productId: product.id, quantity: 1 } } } });
 
-    const checkout = await request(app.getHttpServer())
-      .post('/api/orders/checkout')
-      .set('Authorization', `Bearer ${customer.token}`)
-      .send({ serviceAreaId: area.id, deliveryType: OrderDeliveryType.PICKUP });
+    const checkout = await request(app.getHttpServer()).post('/api/orders/checkout').set('Authorization', `Bearer ${customer.token}`).send({ serviceAreaId: area.id, deliveryType: OrderDeliveryType.PICKUP });
     expect(checkout.status).toBe(400);
     expect(checkout.body?.error?.message ?? checkout.body?.message).toContain('Orders are currently disabled');
 
-    const enabled = await request(app.getHttpServer())
-      .patch('/api/admin/settings')
-      .set('Authorization', `Bearer ${superToken}`)
-      .send({ ordersEnabled: true });
+    const enabled = await request(app.getHttpServer()).patch('/api/admin/settings').set('Authorization', `Bearer ${superToken}`).send({ ordersEnabled: true });
     expect(enabled.status).toBe(200);
 
     const commissionBefore = await prisma.commissionConfig.findFirst({ where: { isActive: true }, orderBy: { createdAt: 'desc' } });
     const commissionBeforeRate = commissionBefore ? Number(commissionBefore.defaultRatePercent) : 10;
-    const commissionUpdate = await request(app.getHttpServer())
-      .patch('/api/admin/settings')
-      .set('Authorization', `Bearer ${superToken}`)
-      .send({ defaultCommissionRate: 17 });
+    const commissionUpdate = await request(app.getHttpServer()).patch('/api/admin/settings').set('Authorization', `Bearer ${superToken}`).send({ defaultCommissionRate: 17 });
     expect(commissionUpdate.status).toBe(200);
     expect(Number((await prisma.commissionConfig.findFirst({ where: { isActive: true }, orderBy: { createdAt: 'desc' } }))?.defaultRatePercent)).toBe(17);
 
-    const minimumUpdate = await request(app.getHttpServer())
-      .patch('/api/admin/settings')
-      .set('Authorization', `Bearer ${superToken}`)
-      .send({ minimumOrderAmount: 20000 });
+    const minimumUpdate = await request(app.getHttpServer()).patch('/api/admin/settings').set('Authorization', `Bearer ${superToken}`).send({ minimumOrderAmount: 20000 });
     expect(minimumUpdate.status).toBe(200);
     expect((await prisma.setting.findUnique({ where: { key: 'minimumOrderAmount' } }))?.value).toBe(20000);
 
@@ -161,23 +125,14 @@ describe('Admin hardening e2e', () => {
     const cart = await prisma.cart.findUniqueOrThrow({ where: { customerId: customer.user.id } });
     await prisma.cartItem.create({ data: { cartId: cart.id, productId: product.id, quantity: 1 } });
 
-    const tooSmall = await request(app.getHttpServer())
-      .post('/api/orders/checkout')
-      .set('Authorization', `Bearer ${customer.token}`)
-      .send({ serviceAreaId: area.id, deliveryType: OrderDeliveryType.PICKUP });
+    const tooSmall = await request(app.getHttpServer()).post('/api/orders/checkout').set('Authorization', `Bearer ${customer.token}`).send({ serviceAreaId: area.id, deliveryType: OrderDeliveryType.PICKUP });
     expect(tooSmall.status).toBe(400);
     expect(tooSmall.body?.error?.message ?? tooSmall.body?.message).toContain('minimum order of 200 NGN');
 
-    const minimumReset = await request(app.getHttpServer())
-      .patch('/api/admin/settings')
-      .set('Authorization', `Bearer ${superToken}`)
-      .send({ minimumOrderAmount: beforeMinimumAmount });
+    const minimumReset = await request(app.getHttpServer()).patch('/api/admin/settings').set('Authorization', `Bearer ${superToken}`).send({ minimumOrderAmount: beforeMinimumAmount });
     expect(minimumReset.status).toBe(200);
 
-    const placed = await request(app.getHttpServer())
-      .post('/api/orders/checkout')
-      .set('Authorization', `Bearer ${customer.token}`)
-      .send({ serviceAreaId: area.id, deliveryType: OrderDeliveryType.PICKUP });
+    const placed = await request(app.getHttpServer()).post('/api/orders/checkout').set('Authorization', `Bearer ${customer.token}`).send({ serviceAreaId: area.id, deliveryType: OrderDeliveryType.PICKUP });
     expect(placed.status).toBe(201);
     expect(Number(placed.body.commissionRateSnapshot)).toBe(17);
 
@@ -194,7 +149,7 @@ describe('Admin hardening e2e', () => {
     const vendorOwner = await createUser(UserRole.VENDOR, 'Payout Vendor');
     const riderOwner = await createUser(UserRole.RIDER, 'Payout Rider');
     const type = await prisma.vendorType.create({ data: { name: `PayoutType-${unique}` } });
-    const vendor = await prisma.vendor.create({ data: { ownerUserId: vendorOwner.user.id, vendorTypeId: type.id, storeName: `Payout Store-${unique}`, status: 'APPROVED', isOpen: true, supportedDeliveryModels: ['PLATFORM_DELIVERY'] } });
+    const vendor = await prisma.vendor.create({ data: { ownerUserId: vendorOwner.user.id, vendorTypeId: type.id, storeName: `Payout Store-${unique}`, status: 'APPROVED', isOpen: true, supportedDeliveryModels: [DeliveryModel.PLATFORM_DELIVERY] } });
     await prisma.vendorLocation.create({ data: { vendorId: vendor.id, serviceAreaId: area.id, latitude: 6.5, longitude: 7.5 } });
     const category = await prisma.category.create({ data: { name: `PayoutCategory-${unique}` } });
     const product = await prisma.product.create({ data: { vendorId: vendor.id, categoryId: category.id, name: `PayoutProduct-${unique}`, priceAmount: 10000, isAvailable: true } });
@@ -202,17 +157,11 @@ describe('Admin hardening e2e', () => {
     await prisma.cart.create({ data: { customerId: customer.user.id, vendorId: vendor.id, items: { create: { productId: product.id, quantity: 1 } } } });
     const address = await prisma.address.create({ data: { customerId: customer.user.id, label: 'Home', addressText: 'Payout Street', latitude: 6.5, longitude: 7.5 } });
 
-    const pricing = await request(app.getHttpServer())
-      .patch(`/api/admin/pricing/service-areas/${area.id}`)
-      .set('Authorization', `Bearer ${superToken}`)
-      .send({ serviceFeeRatePercent: 0, serviceFeeCapAmount: 100000, baseDeliveryFee: 10000, perKmDeliveryFee: 0, deliveryRadiusKm: 8, riderPayoutRatePercent: 90, surgeEnabled: false, surgeLevel: 'NORMAL', surgeSlightlyHighAmount: 0, surgeHighAmount: 0, surgeVeryHighAmount: 0 });
+    const pricing = await request(app.getHttpServer()).patch(`/api/admin/pricing/service-areas/${area.id}`).set('Authorization', `Bearer ${superToken}`).send({ serviceFeeRatePercent: 0, serviceFeeCapAmount: 100000, baseDeliveryFee: 10000, perKmDeliveryFee: 0, deliveryRadiusKm: 8, riderPayoutRatePercent: 90, surgeEnabled: false, surgeLevel: 'NORMAL', surgeSlightlyHighAmount: 0, surgeHighAmount: 0, surgeVeryHighAmount: 0 });
     expect(pricing.status).toBe(200);
     expect(Number((await prisma.pricingConfig.findUnique({ where: { id: pricing.body.id } }))?.riderPayoutRatePercent)).toBe(90);
 
-    const order = await request(app.getHttpServer())
-      .post('/api/orders/checkout')
-      .set('Authorization', `Bearer ${customer.token}`)
-      .send({ serviceAreaId: area.id, deliveryType: OrderDeliveryType.DELIVERY, addressId: address.id });
+    const order = await request(app.getHttpServer()).post('/api/orders/checkout').set('Authorization', `Bearer ${customer.token}`).send({ serviceAreaId: area.id, deliveryType: OrderDeliveryType.DELIVERY, addressId: address.id });
     expect(order.status).toBe(201);
     expect(Number(order.body.riderPayoutRateSnapshot)).toBe(90);
     expect(order.body.pricingConfigId).toBe(pricing.body.id);
