@@ -422,22 +422,33 @@ export class WalletService {
           throw new BadRequestException('Wallet is unavailable.');
         }
 
-        if (wallet.balance < dto.amount) {
-          throw new ConflictException(
-            'Insufficient wallet balance.',
-          );
+        // Reserve the withdrawal atomically so concurrent withdrawals cannot
+        // both spend the same observed wallet balance.
+        const debited = await tx.wallet.updateMany({
+          where: {
+            id: wallet.id,
+            isActive: true,
+            balance: { gte: dto.amount },
+          },
+          data: {
+            balance: { decrement: dto.amount },
+          },
+        });
+
+        if (debited.count !== 1) {
+          throw new ConflictException('Insufficient wallet balance.');
         }
 
-        const before = wallet.balance;
-        const after = before - dto.amount;
+        const updatedWallet = await tx.wallet.findUniqueOrThrow({
+          where: { id: wallet.id },
+          select: { balance: true },
+        });
+
+        const before = updatedWallet.balance + dto.amount;
+        const after = updatedWallet.balance;
         const ref = `RZW-WD-${randomBytes(7)
           .toString('hex')
           .toUpperCase()}`;
-
-        await tx.wallet.update({
-          where: { id: wallet.id },
-          data: { balance: after },
-        });
 
         await tx.walletTransaction.create({
           data: {
